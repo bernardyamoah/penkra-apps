@@ -18,6 +18,36 @@ test("generic module assignment preserves artwork and is one-way", async () => {
   await assert.rejects(() => executeCanvasScript(roles, 'SetModule("deck");'), /no role-bearing frames/u);
 });
 
+test("UpdateDocument exactly replaces bounded root metadata without changing nodes or module", async () => {
+  const source = {
+    module: "web", lang: "en", axes: {}, variables: {}, paragraphStyles: {}, imports: {}, flows: [],
+    children: [{ id: "route", type: "frame", role: "route", width: 100, height: 100 }],
+  };
+  const result = await executeCanvasScript(source, `return UpdateDocument({
+    lang: null,
+    axes: { appearance: { modes: [{ name: "light" }, { name: "dark" }] } },
+    variables: { ink: { tokenType: "color", cascade: [{ value: "#111111" }] } },
+    paragraphStyles: { body: { fontSize: 14 } },
+    imports: {},
+    flows: []
+  });`);
+  assert.equal(result.changed, true);
+  assert.equal(result.document.lang, undefined);
+  assert.equal(result.document.module, "web");
+  assert.deepEqual(result.document.children, source.children);
+  assert.deepEqual(result.result, ["lang", "axes", "variables", "paragraphStyles", "imports", "flows"]);
+  assert.deepEqual(result.touchedNodeIds, []);
+});
+
+test("UpdateDocument rejects structural and publication root changes", async () => {
+  const source = { module: "generic", axes: {}, variables: {}, paragraphStyles: {}, imports: {}, flows: [], children: [] };
+  for (const code of [
+    'UpdateDocument({ children: [] });',
+    'UpdateDocument({ module: "web" });',
+    'UpdateDocument({ library: {} });',
+  ]) await assert.rejects(() => executeCanvasScript(source, code), /cannot change root property/u);
+});
+
 test("inspection context is requested only when scripts mention inspection fields", () => {
   assert.equal(scriptNeedsInspection("Print(1);"), false);
   assert.equal(scriptNeedsInspection('return Get("#a")[0].bounds;'), true);
@@ -181,13 +211,21 @@ test("visitor-form Get streams beyond the materialized result cap", async () => 
 });
 
 test("unknown selector prefixes fail explicitly while bare IDs remain valid", async () => {
-  const document = { version: "2.15", children: [{ id: "frame", type: "frame" }] };
+  const document = {
+    version: "2.15",
+    children: [
+      { id: "frame", type: "frame" },
+      { id: "other", type: "rectangle" },
+    ],
+  };
   await assert.rejects(
     executeCanvasScript(document, 'return Get("typo:frame");'),
     /Unknown Canvas selector "typo:frame"/u,
   );
   const result = await executeCanvasScript(document, 'return Get("frame")[0].node.id;');
   assert.equal(result.result, "frame");
+  const wildcard = await executeCanvasScript(document, 'return Get("*").map((entry) => entry.node.id);');
+  assert.deepEqual(wildcard.result, ["frame", "other"]);
 });
 
 test("scripts report semantic mutations without comparing the whole document", async () => {
@@ -229,6 +267,122 @@ test("execute scripts reject invalid and oversized code", async () => {
     ),
     /Print is limited to 1,000 entries/,
   );
+});
+
+test("runaway scripts keep their stable timeout code", async () => {
+  await assert.rejects(
+    executeCanvasScript({ version: "2.17", children: [] }, "while (true) {}"),
+    (error) => {
+      assert.equal(error.code, "CANVAS_SCRIPT_TIMEOUT");
+      return true;
+    },
+  );
+});
+
+test("bulk exact-id inserts do not rescan the existing document for every mutation", async () => {
+  const children = Array.from({ length: 3_200 }, (_, index) => ({
+    id: `existing-${index}`,
+    type: "frame",
+    children: [],
+  }));
+  const document = { version: "2.17", children };
+  const code = Array.from({ length: 220 }, (_, index) =>
+    `Insert("#existing-3199", ${JSON.stringify({
+      id: `added-${index}`,
+      type: "frame",
+      children: [{ id: `label-${index}`, type: "text", content: "x".repeat(80) }],
+    })});`,
+  ).join("\n");
+
+  const result = await executeCanvasScript(document, code);
+
+  assert.equal(result.document.children.at(-1).children.length, 220);
+  assert.equal(result.touchedNodeIds.length, 441);
+});
+
+test("the mutation identity index stays authoritative across structural operations", async () => {
+  const document = {
+    version: "2.17",
+    children: [
+      { id: "left", type: "frame", children: [{ id: "old", type: "text", content: "Old" }] },
+      { id: "right", type: "frame", children: [] },
+    ],
+  };
+  const result = await executeCanvasScript(document, `
+    Insert("#left", { id: "inserted", type: "frame", children: [{ id: "inserted-label", type: "text", content: "Inserted" }] });
+    Update("#inserted", { children: [{ id: "updated-label", type: "text", content: "Updated" }] });
+    Replace("#old", { id: "replacement", type: "text", content: "Replacement" });
+    const copied = Copy("#inserted", "#right");
+    Move("#replacement", "#right", 0);
+    Delete("#updated-label");
+    return {
+      copied,
+      replacement: Get("#replacement")[0].parent.id,
+      removed: Get("#updated-label").length,
+      rightChildren: Get("#right", undefined, { depth: 1 })[0].node.children.map(({ id }) => id),
+    };
+  `);
+
+  assert.equal(result.result.replacement, "right");
+  assert.equal(result.result.removed, 0);
+  assert.deepEqual(result.result.rightChildren, ["replacement", result.result.copied]);
+  await assert.rejects(
+    executeCanvasScript(result.document, 'Insert("#left", { id: "replacement", type: "text" });'),
+    /Node replacement already exists/u,
+  );
+  await assert.rejects(
+    executeCanvasScript(result.document, 'Move("#right", "#" + Get("#right", undefined, { depth: 1 })[0].node.children[1].id);'),
+    /inside its own subtree/u,
+  );
+});
+
+test("slot content is addressable structural data across script mutations", async () => {
+  const document = {
+    version: "2.17",
+    children: [
+      {
+        id: "card",
+        type: "frame",
+        reusable: true,
+        properties: {
+          content: { type: "slot", target: "body" },
+        },
+        children: [{ id: "body", type: "frame", children: [] }],
+      },
+      {
+        id: "use",
+        type: "ref",
+        ref: "card",
+        slots: {
+          content: [{ id: "first", type: "text", content: "First" }],
+        },
+      },
+      { id: "outside", type: "frame", children: [] },
+    ],
+  };
+
+  const result = await executeCanvasScript(document, `
+    Insert(Slot("#use", "content"), { id: "second", type: "text", content: "Second" });
+    Move("#first", "#outside");
+    const copied = Copy("#outside", Slot("#use", "content"));
+    Delete("#second");
+    SetSlot("#use", "content", [{ id: "final", type: "text", content: "Final" }]);
+    const reset = ResetSlot("#use", "content");
+    return {
+      copied,
+      reset,
+      finalRemoved: Get("#final").length,
+      removed: Get("#second").length,
+      outside: Get("#outside", undefined, { depth: 1 })[0].node.children.map(({ id }) => id),
+    };
+  `);
+
+  assert.deepEqual(result.result.reset, ["final"]);
+  assert.equal(result.result.finalRemoved, 0);
+  assert.equal(result.result.removed, 0);
+  assert.deepEqual(result.result.outside, ["first"]);
+  assert.equal(result.document.children[1].slots, undefined);
+  assert.match(result.result.copied, /^outside-copy-/u);
 });
 
 test("Canvas script rejects invalid hierarchy and identity at the mutation boundary", async () => {

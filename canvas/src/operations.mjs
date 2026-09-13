@@ -22,12 +22,18 @@ import { bindingsForExportSet, exportRoleForFormat, listExportFrames, resolveExp
 import { assertExportAvailable } from "./export-availability.mjs";
 import { assertValidDescendantOverrides } from "./canvas-schema.mjs";
 import { normalizeCanvasAliasesInPlace } from "./canvas-normalization.mjs";
+import { shouldCompactSnapshot } from "./snapshot-policy.mjs";
+import { searchCanvasIcons } from "./pencil-icon-provider.mjs";
 
 const EXECUTION_INSPECTION_LIMIT = 50;
+const snapshotCompactions = new Map();
 
 const runtime = globalThis.penkra;
 if (!runtime?.operations) throw new Error("Canvas operations require the Penkra App runtime.");
 const api = createCanvasApi(runtime);
+
+runtime.operations.handle("icons.search", async ({ query, library, limit }) =>
+  searchCanvasIcons(query, { library, limit }));
 
 runtime.operations.handle("documents.list", async (input = {}) => {
   const items = [];
@@ -36,9 +42,12 @@ runtime.operations.handle("documents.list", async (input = {}) => {
   let cursor;
   do {
     const page = await api.listDocuments(cursor);
-    items.push(...page.items.filter(
-      (document) => !query || document.title.toLowerCase().includes(query),
-    ));
+    items.push(...page.items
+      .filter((document) => !query || document.title.toLowerCase().includes(query))
+      .map(({ projection, ...document }) => ({
+        ...document,
+        module: projection?.module ?? null,
+      })));
     cursor = page.pageInfo.nextCursor ?? undefined;
   } while (cursor && items.length < limit);
   return {
@@ -100,9 +109,12 @@ runtime.operations.handle("documents.open", async ({ documentId }, context) => {
 runtime.operations.handle("documents.execute", async ({ documentId, code }, context) => {
   const signal = context?.signal ?? new AbortController().signal;
   const { executeCanvasScript, scriptNeedsInspection } = await import("./script-runtime.mjs");
-  const projected = await api.getDocumentProjection(documentId);
-  let payload = projected ?? await api.getDocument(documentId);
-  let model = projected ? null : restoreDocumentModel(payload);
+  let payload = await api.getDocumentProjection(documentId);
+  // getDocumentProjection avoids downloading chunked CRDT state when the
+  // snapshot projection is current. Once updates exist, the API returns the
+  // complete fetched snapshot and update log, which must be materialized
+  // before either reading or compacting the document.
+  let model = payload.updates?.length > 0 ? restoreDocumentModel(payload) : null;
   try {
     const before = model ? materialize(model) : structuredClone(payload.snapshot.source);
     normalizeCanvasAliasesInPlace(before);
@@ -110,10 +122,14 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
     const inspectDocument = needsInitialInspection
       ? (await import("./document-inspection.mjs")).inspectDocument
       : null;
+    let retainedImports;
+    if (inspectDocument && Object.keys(before.imports ?? {}).length > 0) {
+      retainedImports = await loadRetainedCanvasImports(api, before, { documentId });
+    }
     let beforeInspection = { items: [] };
     if (inspectDocument) {
       const inspectionModel = model ?? createDocumentModel(before);
-      try { beforeInspection = inspectDocument(before, listNodes(inspectionModel), 1_000); }
+      try { beforeInspection = inspectDocument(before, listNodes(inspectionModel), 1_000, undefined, { imports: retainedImports?.imports }); }
       finally { if (!model) inspectionModel.doc.destroy(); }
     }
     const execution = await executeCanvasScript(
@@ -138,8 +154,9 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
       error.code = "CANVAS_EXECUTION_RESULT_LIMIT";
       throw error;
     }
-    let retainedImports;
-    if (hasQualifiedDescendantOverrides(execution.document)) {
+    const executionHasImports = Object.keys(execution.document.imports ?? {}).length > 0;
+    const importsChanged = JSON.stringify(before.imports ?? {}) !== JSON.stringify(execution.document.imports ?? {});
+    if (hasQualifiedDescendantOverrides(execution.document) || (executionHasImports && (!retainedImports || importsChanged))) {
       retainedImports = await loadRetainedCanvasImports(
         api,
         { ...execution.document, imports: execution.document.imports ?? {} },
@@ -178,6 +195,7 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
           listNodes(validationModel),
           EXECUTION_INSPECTION_LIMIT,
           new Set(touchedNodeIds),
+          { imports: retainedImports?.imports },
         );
         existingInspection = inspected.items;
         inspectionTotal = inspected.total;
@@ -252,20 +270,28 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
     const operationId = crypto.randomUUID();
     const operationUpdates = createDocumentOperationUpdates(model, execution.document);
     Y.applyUpdate(model.doc, operationUpdates.forward, LOCAL_ORIGIN);
-    const appended = await api.appendUpdate(documentId, {
-      clientUpdateId: crypto.randomUUID(),
-      update: encodeUpdate(operationUpdates.forward),
-      expectedSequence: authoritativeSequence(payload),
-      operation: {
-        id: operationId,
-        inverseUpdate: encodeUpdate(operationUpdates.inverse),
-      },
-    });
-    await api.createSnapshot(documentId, {
-      throughSequence: appended.sequence,
-      state: encodeState(model),
-      source: materialize(model),
-    });
+    let appended;
+    try {
+      appended = await api.appendUpdate(documentId, {
+        clientUpdateId: crypto.randomUUID(),
+        update: encodeUpdate(operationUpdates.forward),
+        expectedSequence: authoritativeSequence(payload),
+        operation: {
+          id: operationId,
+          inverseUpdate: encodeUpdate(operationUpdates.inverse),
+        },
+      });
+    } catch (error) {
+      throw error;
+    }
+    const cachedState = encodeState(model);
+    if (shouldCompactSnapshot(payload.snapshot?.throughSequence, appended.sequence)) {
+      queueSnapshotCompaction(documentId, {
+        throughSequence: appended.sequence,
+        state: cachedState,
+        source: materialize(model),
+      });
+    }
     return operationResult({
       documentId,
       changed: true,
@@ -282,6 +308,19 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
     model?.doc.destroy();
   }
 });
+
+function queueSnapshotCompaction(documentId, snapshot) {
+  if (snapshotCompactions.has(documentId)) return snapshotCompactions.get(documentId);
+  const task = api.createSnapshot(documentId, snapshot)
+    .catch((error) => {
+      console.warn(`Canvas snapshot compaction failed for ${documentId}:`, error);
+    })
+    .finally(() => {
+      if (snapshotCompactions.get(documentId) === task) snapshotCompactions.delete(documentId);
+    });
+  snapshotCompactions.set(documentId, task);
+  return task;
+}
 
 function hasQualifiedDescendantOverrides(document) {
   return listSourceNodes(document?.children).some(

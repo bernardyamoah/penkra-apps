@@ -22,6 +22,7 @@ import {
   sceneUpdateToMutations,
 } from "./openpencil-engine.mjs";
 import { prepareOpenPencilRenderDocument } from "./openpencil-render-document.mjs";
+import { resolveCanvasDocument } from "./canvas-resolver.mjs";
 
 test("references inherit root paint from ordinary Canvas frames without a legacy reusable flag", () => {
   const graph = createOpenPencilGraph({ children: [
@@ -36,6 +37,19 @@ test("references inherit root paint from ordinary Canvas frames without a legacy
   assert.equal(instance.x, 20);
   assert.equal(instance.y, 280);
   assert.equal(instance.opacity, 0.5);
+});
+
+test("native Canvas component references do not produce compatibility warnings", () => {
+  const document = { children: [
+    { id: "instance", type: "ref", ref: "source" },
+    { id: "source", type: "frame", layout: "none", width: 300, height: 70, children: [] },
+  ] };
+  assert.deepEqual(analyzeOpenPencilCompatibility(document), []);
+
+  const missing = { children: [{ id: "instance", type: "ref", ref: "missing" }] };
+  assert.deepEqual(analyzeOpenPencilCompatibility(missing).map(({ nodeId, kind }) => ({ nodeId, kind })), [
+    { nodeId: "instance", kind: "component" },
+  ]);
 });
 
 test("solid fill and stroke paint opacity multiply color alpha", () => {
@@ -154,6 +168,28 @@ test("canonical named paragraph styles reach CanvasKit runs and marks override t
   assert.equal(runs.at(-1).style.fontWeight, 500);
   assert.equal(runs.at(-1).style.fontSize, 20);
   assert.deepEqual(runs.at(-1).style.fills[0].color, { r: 0x12 / 255, g: 0x34 / 255, b: 0x56 / 255, a: 1 });
+});
+
+test("canonical paragraph styles normalize CSS font-weight keywords without invalid glyph runs", () => {
+  const graph = createOpenPencilGraph({
+    version: "2.17",
+    module: "web",
+    axes: {}, variables: {}, imports: {}, flows: [],
+    paragraphStyles: {
+      normal: { fontFamily: "Inter", fontSize: 13, fontWeight: "normal", fill: "#FFFFFF" },
+      bold: { fontFamily: "Inter", fontSize: 13, fontWeight: "bold", fill: "#FFFFFF" },
+      numeric: { fontFamily: "Inter", fontSize: 13, fontWeight: "500", fill: "#FFFFFF" },
+    },
+    children: [
+      { id: "normal", type: "text", content: "Normal", paragraphs: [{ from: 0, to: 6, style: "normal" }], marks: [] },
+      { id: "bold", type: "text", content: "Bold", paragraphs: [{ from: 0, to: 4, style: "bold" }], marks: [] },
+      { id: "numeric", type: "text", content: "Medium", paragraphs: [{ from: 0, to: 6, style: "numeric" }], marks: [] },
+    ],
+  });
+
+  assert.equal(graph.getNode("normal").styleRuns[0].style.fontWeight, 400);
+  assert.equal(graph.getNode("bold").styleRuns[0].style.fontWeight, 700);
+  assert.equal(graph.getNode("numeric").styleRuns[0].style.fontWeight, 500);
 });
 
 test("Pencil image opacity and blend mode survive asset binding", () => {
@@ -368,6 +404,94 @@ test("deferring the fallback-font layout preserves the final graph geometry", ()
   }
 });
 
+test("scene graph instance population can be disabled for a compact editor projection", () => {
+  const source = {
+    version: "2.17",
+    children: [
+      {
+        id: "component",
+        type: "frame",
+        width: 200,
+        height: 100,
+        children: [{ id: "component-child", type: "rectangle", width: 20, height: 20 }],
+      },
+      { id: "instance", type: "ref", ref: "component", width: 200, height: 100 },
+    ],
+  };
+
+  const populated = createOpenPencilGraph(source, new Map(), null, {
+    computeLayout: false,
+  });
+  const compact = createOpenPencilGraph(source, new Map(), null, {
+    computeLayout: false,
+    populateInstances: false,
+  });
+
+  assert.ok(populated.getNode("instance").childIds.length > 0);
+  assert.deepEqual(compact.getNode("instance").childIds, []);
+  assert.ok(compact.nodes.size < populated.nodes.size);
+});
+
+test("editor instance descendants structurally share unchanged primitive defaults", () => {
+  const source = {
+    version: "2.17",
+    children: [
+      {
+        id: "component",
+        type: "frame",
+        width: 200,
+        height: 100,
+        children: [{ id: "component-child", type: "rectangle", width: 20, height: 20 }],
+      },
+      { id: "instance", type: "ref", ref: "component", width: 200, height: 100 },
+    ],
+  };
+  const editor = createOpenPencilEditor(source, { computeInitialLayout: false });
+  const instance = editor.graph.getNode("instance");
+  const child = editor.graph.getNode(instance.childIds[0]);
+
+  assert.equal(child.rotation, 0);
+  assert.equal(Object.hasOwn(child, "rotation"), false);
+  editor.graph.updateNode(child.id, { rotation: 15 });
+  assert.equal(child.rotation, 15);
+  assert.equal(Object.hasOwn(child, "rotation"), true);
+});
+
+test("a deferred reference renders slot replacement content with editable provenance", () => {
+  const source = {
+    version: "2.17",
+    children: [
+      {
+        id: "component", type: "frame", width: 200, height: 100,
+        properties: { body: { type: "slot", target: "holder" } },
+        children: [{ id: "holder", type: "frame", children: [
+          { id: "default", type: "text", content: "Default" },
+        ] }],
+      },
+      { id: "instance", type: "ref", ref: "component", slots: {
+        body: [{ id: "custom", type: "text", content: "Custom" }],
+      } },
+    ],
+  };
+  const deferred = resolveCanvasDocument(source, { shouldExpandRef: () => false }).document;
+  const prepared = prepareOpenPencilRenderDocument(deferred).document;
+  const graph = createOpenPencilGraph(deferred, new Map(), { document: prepared }, {
+    computeLayout: false,
+    compactInstanceStorage: true,
+  });
+
+  assert.equal(graph.getNode("instance/holder/default"), undefined);
+  assert.equal(graph.getNode("instance/holder/custom").text, "Custom");
+  assert.deepEqual(graph.getNode("instance/holder/custom").canvasProvenance.slot, {
+    instanceId: "instance",
+    name: "body",
+  });
+  assert.deepEqual(graph.getNode("instance/holder").canvasProvenance.slotTarget, {
+    instanceId: "instance",
+    name: "body",
+  });
+});
+
 test("auto-sized text keeps hug-content flex layouts compact", () => {
   const editor = createOpenPencilEditor({
     version: "2.17",
@@ -517,8 +641,8 @@ test("Pencil 2.17 scene properties survive normalization into the render graph",
   assert.equal(row.strokes[0].align, "INSIDE");
   assert.equal(overlay.layoutPositioning, "ABSOLUTE");
   assert.equal(textNode.textAutoResize, "NONE");
-  assert.ok(Math.abs(arc.arcData.startingAngle - Math.PI / 2) < 1e-9);
-  assert.ok(Math.abs(arc.arcData.endingAngle + Math.PI / 2) < 1e-9);
+  assert.ok(Math.abs(arc.arcData.startingAngle + Math.PI / 2) < 1e-9);
+  assert.ok(Math.abs(arc.arcData.endingAngle - Math.PI / 2) < 1e-9);
   assert.equal(arc.arcData.innerRadius, 0.8);
   assert.deepEqual(
     path.vectorNetwork.vertices.map(({ x, y }) => [x, y]),
@@ -688,6 +812,64 @@ test("an instance-descendant edit persists at its canonical Pencil descendants p
     path: ["row-label", "content"],
     value: "Blocked",
   }]);
+});
+
+test("a resolved slot child edit targets its instance-owned source node", () => {
+  const source = {
+    version: "2.17", module: "generic", axes: {}, variables: {}, paragraphStyles: {}, imports: {}, flows: [],
+    children: [
+      { id: "card", type: "frame", properties: { content: { type: "slot", target: "body" } }, children: [{ id: "body", type: "frame", children: [] }] },
+      { id: "use", type: "ref", ref: "card", slots: { content: [{ id: "custom", type: "text", content: "Before" }] } },
+    ],
+  };
+  const prepared = prepareOpenPencilRenderDocument(resolveCanvasDocument(source).document);
+  const editor = createOpenPencilEditor(source, { preparedDocument: prepared });
+  const nodeId = "use/body/custom";
+  const node = editor.graph.getNode(nodeId);
+  editor.select([nodeId]);
+
+  assert.deepEqual(sceneEventToPenMutations(
+    editor,
+    source,
+    nodeId,
+    { text: "After" },
+    sceneNodePropertySnapshot(node),
+  ), [{ kind: "set-property", nodeId: "custom", property: "content", value: "After" }]);
+});
+
+test("new scene children inserted at a resolved slot target retain slot parentage", () => {
+  const source = {
+    version: "2.17",
+    children: [{ id: "use", type: "ref", ref: "card", slots: { content: [] } }],
+  };
+  const parent = {
+    id: "use/body",
+    childIds: ["created"],
+    canvasProvenance: { slotTarget: { instanceId: "use", name: "content" } },
+  };
+  const editor = {
+    graph: {
+      getPages: () => [{ id: "page" }],
+      getNode: (id) => id === parent.id ? parent : null,
+    },
+  };
+  const created = {
+    id: "created", type: "TEXT", name: "Text", parentId: parent.id,
+    x: 0, y: 0, width: 100, height: 20, text: "Created", fontFamily: "Inter", fontSize: 14, fontWeight: 400,
+    fills: [], styleRuns: [],
+  };
+
+  assert.deepEqual(sceneNodeInsertionMutation(editor, created, source), {
+    kind: "insert-node",
+    node: {
+      id: "created", type: "text", name: "Text", x: 0, y: 0, width: 100, height: 20,
+      content: "Created", fontFamily: "Inter", fontSize: 14, fontWeight: 400,
+      marks: [], paragraphs: [{ from: 0, to: 7 }],
+    },
+    parentId: "use",
+    parentSlot: "content",
+    position: 0,
+  });
 });
 
 test("Pencil gradients and blur effects map faithfully without changing the source", () => {
@@ -1535,6 +1717,32 @@ test("component instances expose their immediate authored descendant for hierarc
   assert.equal(graph.hitTest(x, y, "Ue7jf")?.id, instanceRow?.id);
   assert.equal(instanceRow?.componentId, "FEmhW");
   assert.equal(graph.hitTestDeep(x, y, "Ue7jf")?.id, instanceLabel.id);
+});
+
+test("document refresh invalidates retained effect pictures before replacing same-ID nodes", () => {
+  const source = { children: [{ id: "card", type: "rectangle", width: 62, height: 87,
+    fill: "#FFFFFF", stroke: "#80A9FF", strokeWidth: 2,
+    effect: { type: "shadow", shadowType: "outer", color: "#00000044", blur: 5 },
+  }] };
+  const editor = createOpenPencilEditor(source);
+  const pictures = [new Map([["card", { strokeWidth: 2 }]]), new Map([["card", { strokeWidth: 2 }]])];
+  const renderers = pictures.map((cache) => ({ invalidateAllPictures() { cache.clear(); } }));
+  const wrapped = {
+    state: editor.state,
+    canvasRenderers: renderers,
+    get graph() { return editor.graph; },
+    replaceGraph(graph) {
+      for (const cache of pictures) assert.equal(cache.size, 0);
+      editor.replaceGraph(graph);
+    },
+    select: (...args) => editor.select(...args),
+    requestRender: () => editor.requestRender(),
+  };
+  source.children[0].strokeWidth = 1;
+  source.children[0].stroke = "#92B5FF";
+  refreshOpenPencilEditor(wrapped, source, "card");
+  assert.equal(editor.graph.getNode("card").strokes[0].weight, 1);
+  assert.deepEqual([...editor.state.selectedIds], ["card"]);
 });
 
 test("repeated document refresh keeps one editor, viewport, and selection", () => {

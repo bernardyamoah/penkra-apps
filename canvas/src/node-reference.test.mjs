@@ -8,6 +8,8 @@ import {
   resolveCanvasNodeSelection,
 } from "./node-reference.mjs";
 import { createOpenPencilGraph } from "./openpencil-engine.mjs";
+import { prepareOpenPencilRenderDocument } from "./openpencil-render-document.mjs";
+import { resolveCanvasDocument } from "./canvas-resolver.mjs";
 
 describe("formatCanvasNodeReference", () => {
   it("copies the same concise stable node reference used by Pencil", () => {
@@ -133,6 +135,73 @@ describe("Canvas canonical node identity", () => {
     assert.equal(selection.effectiveNode.content, "blocked");
     assert.equal(selection.effectiveNode.fill, "#555555");
     assert.equal(selection.isInstanceDescendant, true);
+  });
+
+  it("maps resolved slot visuals back to their instance-owned source nodes", () => {
+    const slotDocument = {
+      version: "2.17",
+      module: "generic",
+      axes: {}, variables: {}, paragraphStyles: {}, imports: {}, flows: [],
+      children: [
+        {
+          id: "card",
+          type: "frame",
+          properties: { content: { type: "slot", target: "body" } },
+          children: [{ id: "body", type: "frame", children: [] }],
+        },
+        {
+          id: "use",
+          type: "ref",
+          ref: "card",
+          slots: { content: [{ id: "custom", type: "text", content: "Custom" }] },
+        },
+      ],
+    };
+    const resolved = resolveCanvasDocument(slotDocument).document;
+    const prepared = prepareOpenPencilRenderDocument(resolved);
+    const graph = createOpenPencilGraph(slotDocument, new Map(), prepared);
+    const selection = resolveCanvasNodeSelection({
+      document: slotDocument,
+      graph,
+      selectedId: "use/body/custom",
+    });
+
+    assert.equal(selection.referenceId, "custom");
+    assert.equal(selection.sourceNode.id, "custom");
+    assert.equal(selection.isInstanceDescendant, false);
+    assert.deepEqual(selection.slot, { instanceId: "use", name: "content" });
+
+    const target = resolveCanvasNodeSelection({
+      document: slotDocument,
+      graph,
+      selectedId: "use/body",
+    });
+    assert.equal(target.referenceId, "use/body");
+    assert.equal(target.isInstanceDescendant, true);
+    assert.deepEqual(target.slotTarget, { instanceId: "use", name: "content" });
+  });
+
+  it("keeps an instance-swap target path stable while exposing the replacement as effective data", () => {
+    const swapDocument = {
+      version: "2.17", module: "generic", axes: {}, variables: {}, paragraphStyles: {}, imports: {}, flows: [],
+      children: [
+        { id: "assistant", type: "frame", fill: "#eeeeee", children: [] },
+        { id: "user", type: "frame", fill: "#222222", children: [] },
+        { id: "transcript", type: "frame", children: [{ id: "row", type: "ref", ref: "assistant" }] },
+        { id: "use", type: "ref", ref: "transcript", descendants: {
+          row: { replace: { id: "row", type: "ref", ref: "user" } },
+        } },
+      ],
+    };
+    const resolved = resolveCanvasDocument(swapDocument).document;
+    const prepared = prepareOpenPencilRenderDocument(resolved);
+    const graph = createOpenPencilGraph(swapDocument, new Map(), prepared);
+    const selection = resolveCanvasNodeSelection({ document: swapDocument, graph, selectedId: "use/row" });
+
+    assert.equal(selection.referenceId, "use/row");
+    assert.equal(selection.sourceNode.ref, "assistant");
+    assert.equal(selection.effectiveNode.id, "row");
+    assert.equal(selection.effectiveNode.ref, "user");
   });
 });
 

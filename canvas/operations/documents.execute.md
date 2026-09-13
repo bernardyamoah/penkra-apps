@@ -318,6 +318,9 @@ do not use gradients, blur, and shadows as substitutes for hierarchy and composi
 
 Use native `type: "icon"` nodes for interface and symbolic icons. They remain identifiable and
 editable. Supply the exact `library` and `icon`, explicit width and height, and a visible fill.
+When the identifier is not already known, use `canvas icons search` and copy a returned `library`
+and `icon` pair exactly. Do not guess catalog identifiers or approximate available icons with
+primitive shapes.
 Supported libraries are:
 
 - `lucide`;
@@ -343,22 +346,32 @@ const continueIcon = {
 If an icon does not render, verify its exact library-specific name or choose a known equivalent
 from the same library. Do not replace ordinary interface icons with generated raster images.
 
-## Reusable components and instances
+## Components, typed properties, and slots
 
-A reusable component is a frame with `reusable: true`. An instance is a `ref` node whose `ref`
-points to that frame ID. Put per-instance changes in the ref's `descendants` object. A key may be
-one unique source descendant ID or its exact slash-separated path relative to the component root.
-Do not include the component root ID in that path. Canvas canonicalizes a bare ID to the same
-relative path before rendering; an unknown path, duplicate equivalent key, unsupported property,
-or invalid value fails the execution before it commits.
+A component definition is a source node referenced by a `ref` instance; it needs no editor-status
+flag. A definition may be root-level or nested inside a role-bearing output frame. Reference-cycle
+validation applies in either location.
+Declare customization on the component's `properties`. Scalar and single-value properties arrive
+through an instance's `props`; a `slot` property names a frame insertion surface—the component
+root or one of its descendants—whose children the instance owns structurally, and its content
+arrives through the instance's `slots`.
 
 ```js
 Insert(null, {
   id: "labeled-component",
   type: "frame",
   name: "Labeled component",
-  reusable: true,
-  layout: "horizontal",
+  properties: {
+    label: { type: "string", default: "Label" },
+    content: {
+      type: "slot",
+      target: "component-content",
+      preferredComponents: ["content-row"],
+      minItems: 0,
+      maxItems: 4
+    }
+  },
+  layout: "vertical",
   width: "fit_content",
   padding: [12, 18],
   gap: 8,
@@ -370,11 +383,19 @@ Insert(null, {
     id: "component-label",
     type: "text",
     content: "Label",
+    bind: { content: "$props.label" },
     textGrowth: "auto",
     fontFamily: "Inter",
     fontSize: 14,
     fontWeight: "600",
-    fill: "#FFFFFF"
+    fill: "#FFFFFF",
+    marks: [],
+    paragraphs: [{ from: 0, to: 5 }]
+  }, {
+    id: "component-content",
+    type: "frame",
+    layout: "vertical",
+    children: []
   }]
 });
 
@@ -382,25 +403,59 @@ Insert("#instance-container", {
   id: "labeled-instance",
   type: "ref",
   ref: "labeled-component",
-  descendants: {
-    "component-label": { content: "Updated label", fill: "#EEF2FF" }
+  props: { label: "Updated label" },
+  slots: {
+    content: [{
+      id: "instance-detail",
+      type: "text",
+      content: "Instance-owned detail",
+      marks: [],
+      paragraphs: [{ from: 0, to: 21 }]
+    }]
   }
 });
 ```
 
-Every descendant type supports `name`, `x`, `y`, `width`, `height`, `rotation`, and `enabled`.
-`fill` is supported only on paintable `frame`, `rectangle`, `ellipse`, `polygon`, `path`, `text`,
-`icon`, and `ref` descendants. Text descendants additionally support `content`, `fontFamily`,
-`fontSize`, `fontWeight`, `fontStyle`, `lineHeight`, `letterSpacing`, `textAlign`,
-`textAlignVertical`, and `textGrowth`; icon descendants additionally support `library`, `icon`, and
-`weight`. A frame or group may also replace `children`. This
-surface is not text-only: for example, `{ "tab/active-rule": { fill: "#4F46E5" } }` changes a
-rectangle inside the instance, and `{ "tab": { fill: "#EEF2FF" } }` changes its source frame.
-Properties outside this list are rejected rather than stored without a rendered effect.
+Property types are `string`, `number`, `boolean`, `color`, `enum`, `icon`, `node`, and `slot`.
+A slot's `target` must identify one descendant frame, or `"."` to make the component root the
+insertion surface. `preferredComponents` guides compatible
+authoring choices; `minItems` and `maxItems` report non-blocking design-system guidance, matching
+the way slot layer limits behave in established design tools. Omitting a slot keeps the
+target frame's default children. Supplying an empty array deliberately clears them. Slot content is
+ordinary authored Canvas structure with stable node IDs, selection, collaboration, undo, and
+ordering—not an opaque JSON prop.
 
-The selector walker traverses source `children`; it does not expand an instance into synthetic
-children. Therefore `Get` cannot select a rendered instance descendant. Update the ref's
-`descendants`, or edit the reusable source when every instance should change. `Get("*")` reports
+Use `descendants` for a narrow per-instance override of component-owned structure. A key may be one
+unique source descendant ID or its exact slash-separated path relative to the component root. Paths
+cross nested component instances without changing ownership. Do not include the outer component
+root ID. Canvas canonicalizes an unambiguous short path to its complete authored path before
+rendering; an unknown path, duplicate equivalent key, structurally invalid property, or invalid
+value fails the execution before it commits.
+
+An override may use any ordinary native Canvas property applicable to that descendant, including
+layout, paint, text, icon, and path geometry. Identity and component-definition properties such as
+`id`, `type`, `ref`, `properties`, `bind`, and `descendants` cannot be changed as ordinary
+properties. Use `props` on a nested `ref` to supply its typed component properties. Use `modes` to
+select a scoped document axis before that descendant subtree resolves.
+
+Use the typed `replace` field for an intentional instance swap. The target path remains the stable
+instance identity even when the replacement supplies another component or node kind.
+
+```js
+Update("#card-instance", {
+  descendants: {
+    "header/status": { props: { tone: "danger" } },
+    "transcript/row": {
+      replace: { id: "row", type: "ref", ref: "user-message" }
+    }
+  }
+});
+```
+
+The selector walker traverses authored `children` and instance-owned slot content; it does not
+expand component-owned descendants into synthetic source nodes. Slot paths contain the explicit
+branch marker `$slots`, for example `instance/$slots/content/instance-detail`. Update an instance's
+`descendants`, or edit the component source when every instance should change. `Get("*")` reports
 authored source paths from the document root, so a component child may appear as
 `component-id/row/label`; the corresponding descendant override key is `row/label` because it is
 relative to that component and deliberately omits `component-id`.
@@ -464,9 +519,41 @@ following read-only execution when fresh measurements or problem analysis matter
 
 ## Editing operations
 
+`UpdateDocument(properties)` permanently replaces the supplied document-wide fields. It accepts
+only `lang`, `axes`, `variables`, `paragraphStyles`, `imports`, and `flows`; omitted fields remain
+unchanged. It cannot alter `module`, `children`, or library publication metadata. Use this for
+design tokens, styles, modes, imports, language, and prototype flows, while node structure remains
+under the node editing operations below.
+
+```js
+UpdateDocument({
+  axes: { appearance: { modes: [{ name: "light" }, { name: "dark" }] } },
+  variables: { ink: { tokenType: "color", cascade: [{ value: "#111111" }] } },
+  paragraphStyles: { body: { fontFamily: "Inter", fontSize: 14 } }
+});
+```
+
 `Insert(parent, node, position?)` inserts one supplied tree. Use `null` for the document root;
 otherwise provide an exact selector, node, or `Get` context for a containing frame or group.
 Position is a zero-based child index and defaults to the end.
+
+Use `Slot(instance, name)` as the structural destination for an instance slot. It can be passed to
+`Insert`, `Move`, or `Copy`. `SetSlot(instance, name, nodes)` atomically replaces or clears one
+slot's complete authored contents. `ResetSlot(instance, name)` removes that instance override so
+the component's default slot content appears again.
+
+```js
+Insert(Slot("#labeled-instance", "content"), {
+  id: "second-detail",
+  type: "text",
+  content: "Another detail",
+  marks: [],
+  paragraphs: [{ from: 0, to: 14 }]
+});
+Move("#existing-detail", Slot("#labeled-instance", "content"), 0);
+SetSlot("#labeled-instance", "content", []);
+ResetSlot("#labeled-instance", "content");
+```
 
 `Update(target, properties)` changes exactly one source node, preserves omitted properties, and
 cannot change its ID. Set a property to `undefined` to remove it. Supplying `children` replaces the
@@ -480,7 +567,7 @@ keeps the target ID. Use it only when the node's complete structure is intention
 subtree to the root or another container. Both preserve the target ID.
 
 `Copy(target, parent, position?, properties?)` clones one subtree and renews every copied ID.
-Optional overrides apply to the copied root but cannot replace its ID or children. Retain returned
+Optional overrides apply to the copied root but cannot replace its ID, children, or slots. Retain returned
 IDs instead of rediscovering nodes with broad selectors.
 
 ```js

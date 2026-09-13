@@ -510,35 +510,12 @@ function vectorStrokePaths(r: SkiaRenderer, node: SceneNode): Path[] | null {
   if (!node.vectorNetwork) return null
   const cached = r.vectorStrokePathCache.get(node.id)
   if (cached) return cached
-
-  const paths: Path[] = []
-  for (const segment of node.vectorNetwork.segments) {
-    const start = node.vectorNetwork.vertices[segment.start]
-    const end = node.vectorNetwork.vertices[segment.end]
-
-    const path = new r.ck.Path()
-    path.moveTo(start.x, start.y)
-    const isStraight =
-      Math.abs(segment.tangentStart.x) < 0.001 &&
-      Math.abs(segment.tangentStart.y) < 0.001 &&
-      Math.abs(segment.tangentEnd.x) < 0.001 &&
-      Math.abs(segment.tangentEnd.y) < 0.001
-    if (isStraight) {
-      path.lineTo(end.x, end.y)
-    } else {
-      path.cubicTo(
-        start.x + segment.tangentStart.x,
-        start.y + segment.tangentStart.y,
-        end.x + segment.tangentEnd.x,
-        end.y + segment.tangentEnd.y,
-        end.x,
-        end.y
-      )
-    }
-    paths.push(path)
-  }
-
-  if (paths.length === 0) return null
+  if (node.vectorNetwork.segments.length === 0) return null
+  // A stroke join exists only when adjacent network segments share one Skia
+  // path. Rebuilding one path per segment preserves the curves but turns every
+  // shared vertex into two caps. The centerline builder retains every connected
+  // chain as a subpath, including disconnected chains and curved segments.
+  const paths = [vectorNetworkToCenterlinePath(r.ck, node.vectorNetwork)]
   r.vectorStrokePathCache.set(node.id, paths)
   return paths
 }
@@ -666,11 +643,10 @@ function drawNodeStroke(
     !node.fills.some((fill) => fill.visible)
   if (shouldStrokeVectorCenterline) {
     const outlineKey = `${node.id}|${stroke.weight}|${stroke.cap ?? node.strokeCap}|${stroke.join ?? node.strokeJoin}|${node.strokeMiterLimit}`
-    const centerlinePaths = node.vectorNetwork?.regions.length === 0 && vectorPaths ? vectorPaths : vectorStroke
     drawVectorPathStrokes(
       r,
       canvas,
-      centerlinePaths,
+      vectorStroke,
       stroke,
       sc,
       node.strokeCap,

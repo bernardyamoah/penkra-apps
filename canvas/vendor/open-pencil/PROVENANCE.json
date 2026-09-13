@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/open-pencil/open-pencil",
   "commit": "4a5e7d557064d941fbac88bd492586db5257ff5f",
-  "sourceEngineSha256": "623cb50fbc8428911b72c6d459c5b273ca843852a6c2a245ab781f20b5c7cb0f",
+  "sourceEngineSha256": "5aa36d13a94b30780553abeeb0af325ffbb76d35c1817c34e968552e6aa67f39",
   "localPatches": [
     "Map Pencil path vertices and tangents through an explicit viewBox before rendering.",
     "Apply Pencil color alpha exactly once in CanvasKit while preserving combined alpha in SVG export.",
@@ -17,6 +17,7 @@
     "Map Pencil 2.17 linear, radial, and angular gradients to native scene gradient paints.",
     "Render semantic Pencil icon nodes through provider geometry without changing their document type.",
     "Carry semantic stroke-icon round caps and joins through the disposable scene graph and honor node-level vector stroke styles in CanvasKit.",
+    "Render unfilled centered vector strokes from their complete segment centerlines so disconnected open curves are not dropped.",
     "Honor numeric-string font weights, text styling, space-around layout, polygons, groups, and blur effects.",
     "Preserve and render every supported Pencil stroke fill instead of selecting the first fill.",
     "Leave unsupported Pencil node and fill types visually empty instead of approximating them with generic frames or colors.",
@@ -49,7 +50,9 @@
     "Expose the upstream default editor-state factory so Canvas can supply Vue-reactive state to the editor integration.",
     "Expose Pencil wrap, min/max constraints, row/column gaps, and grid tracks and placement through the owned Yoga layout graph.",
     "Render Canvas rich-text underline, strikethrough, word spacing, and combined per-run decoration through CanvasKit paragraph style runs.",
-    "Expose the owned scene graph's normalized SVG path parser to native artifact writers."
+    "Expose the owned scene graph's normalized SVG path parser to native artifact writers.",
+    "Construct partial donut ellipses as one annular contour so CanvasKit does not close separate arcs with a diagonal chord.",
+    "Adapt Pencil's counter-clockwise ellipse angles to CanvasKit's clockwise screen-coordinate convention."
   ],
   "exports": [
     "computeBounds",

@@ -5,6 +5,39 @@ import test from "node:test";
 import { getCanvasKit } from "../vendor/open-pencil/engine.source.mjs";
 import { takeDocumentScreenshots } from "./document-screenshot.mjs";
 
+test("Canvas-owned empty-slot hatching renders without a browser WebGL context", async () => {
+  const document = {
+    children: [{
+      id: "slot", type: "frame", width: 80, height: 50,
+      provenance: { slotTarget: { instanceId: "use", name: "content" } },
+      children: [],
+    }],
+  };
+  const [screenshot] = await takeDocumentScreenshots(document, [{ nodeIds: ["slot"] }]);
+  const ck = await getCanvasKit();
+  const image = ck.MakeImageFromEncoded(Buffer.from(screenshot.data, "base64"));
+  assert.ok(image, "CanvasKit should decode the empty-slot screenshot PNG");
+  try {
+    const pixels = image.readPixels(0, 0, {
+      width: image.width(), height: image.height(),
+      colorType: ck.ColorType.RGBA_8888,
+      alphaType: ck.AlphaType.Unpremul,
+      colorSpace: ck.ColorSpace.SRGB,
+    });
+    let purple = 0;
+    let transparent = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const [red, green, blue, alpha] = pixels.slice(index, index + 4);
+      if (alpha < 16) transparent += 1;
+      if (alpha > 96 && blue > red && red > green) purple += 1;
+    }
+    assert.ok(purple > 100, "the renderer-native diagonal hatch should remain visible");
+    assert.ok(transparent > 100, "the hatch should retain transparent spacing between lines");
+  } finally {
+    image.delete();
+  }
+});
+
 test("an exact nested component-instance screenshot includes its overridden text", async () => {
   const document = {
     version: "2.15",
@@ -118,6 +151,119 @@ test("a semantic Lucide icon renders its authored round line endings", async () 
       alphaAt(pixels, image.width(), 21, 6) > 150,
       "the final diagonal should extend past its centerline endpoint with a round cap",
     );
+  } finally {
+    image.delete();
+  }
+});
+
+test("a partial donut ellipse keeps its inner opening clear instead of filling a chord", async () => {
+  const document = {
+    version: "2.17",
+    children: [{
+      type: "ellipse",
+      id: "usage-arc",
+      width: 16,
+      height: 16,
+      fill: "#B9BEC9",
+      innerRadius: 0.78,
+      startAngle: 90,
+      sweepAngle: -223,
+    }],
+  };
+  const [screenshot] = await takeDocumentScreenshots(document, [{ nodeIds: ["usage-arc"] }]);
+  const ck = await getCanvasKit();
+  const image = ck.MakeImageFromEncoded(Buffer.from(screenshot.data, "base64"));
+  assert.ok(image, "CanvasKit should decode the partial donut screenshot PNG");
+  try {
+    const pixels = image.readPixels(0, 0, {
+      width: image.width(),
+      height: image.height(),
+      colorType: ck.ColorType.RGBA_8888,
+      alphaType: ck.AlphaType.Unpremul,
+      colorSpace: ck.ColorSpace.SRGB,
+    });
+    assert.ok(pixels, "decoded screenshot should expose RGBA pixels");
+    const innerAlpha = alphaAt(pixels, image.width(), 4, 5);
+    assert.ok(innerAlpha < 16, `the inner radius should not contain a closing chord (alpha ${innerAlpha})`);
+    assert.ok(alphaAt(pixels, image.width(), 14, 5) > 96, "the outer annular arc should remain visible");
+    assert.ok(alphaAt(pixels, image.width(), 8, 1) > 96, "Pencil's 90-degree start should begin at the top");
+    assert.ok(alphaAt(pixels, image.width(), 4, 0) < 16, "the counter-clockwise convention should not rotate the start toward the upper left");
+  } finally {
+    image.delete();
+  }
+});
+
+test("a full donut ellipse preserves its inner opening", async () => {
+  const document = {
+    version: "2.17",
+    children: [{
+      type: "ellipse",
+      id: "usage-track",
+      width: 16,
+      height: 16,
+      fill: "#23252C",
+      innerRadius: 0.78,
+    }],
+  };
+  const [screenshot] = await takeDocumentScreenshots(document, [{ nodeIds: ["usage-track"] }]);
+  const ck = await getCanvasKit();
+  const image = ck.MakeImageFromEncoded(Buffer.from(screenshot.data, "base64"));
+  assert.ok(image, "CanvasKit should decode the full donut screenshot PNG");
+  try {
+    const pixels = image.readPixels(0, 0, {
+      width: image.width(),
+      height: image.height(),
+      colorType: ck.ColorType.RGBA_8888,
+      alphaType: ck.AlphaType.Unpremul,
+      colorSpace: ck.ColorSpace.SRGB,
+    });
+    assert.ok(pixels, "decoded screenshot should expose RGBA pixels");
+    assert.ok(alphaAt(pixels, image.width(), 8, 8) < 16, "the full ring center should remain transparent");
+    assert.ok(alphaAt(pixels, image.width(), 8, 1) > 96, "the full annular track should remain visible");
+  } finally {
+    image.delete();
+  }
+});
+
+test("a multi-path curved Lucide icon renders its complete centerlines", async () => {
+  const document = {
+    version: "2.17",
+    children: [{
+      type: "icon",
+      id: "refresh",
+      width: 24,
+      height: 24,
+      library: "lucide",
+      icon: "refresh-cw",
+      fill: "#000000",
+    }],
+  };
+  const [screenshot] = await takeDocumentScreenshots(document, [{ nodeIds: ["refresh"] }]);
+  const ck = await getCanvasKit();
+  const image = ck.MakeImageFromEncoded(Buffer.from(screenshot.data, "base64"));
+  assert.ok(image, "CanvasKit should decode the curved Lucide screenshot PNG");
+  try {
+    const pixels = image.readPixels(0, 0, {
+      width: image.width(),
+      height: image.height(),
+      colorType: ck.ColorType.RGBA_8888,
+      alphaType: ck.AlphaType.Unpremul,
+      colorSpace: ck.ColorSpace.SRGB,
+    });
+    assert.ok(pixels, "decoded screenshot should expose RGBA pixels");
+    const rows = new Set();
+    const columns = new Set();
+    let ink = 0;
+    for (let index = 3; index < pixels.length; index += 4) {
+      if (pixels[index] <= 100) continue;
+      const pixel = (index - 3) / 4;
+      ink += 1;
+      columns.add(pixel % image.width());
+      rows.add(Math.floor(pixel / image.width()));
+    }
+    assert.ok(ink > 100);
+    assert.ok(rows.size >= 18);
+    assert.ok(columns.size >= 18);
   } finally {
     image.delete();
   }

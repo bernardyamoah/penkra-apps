@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { pencilIconDefinition, pencilIconVectorDefinition } from "./pencil-icon-provider.mjs";
+import phosphor from "@iconify-json/ph/icons.json" with { type: "json" };
+
+import { pencilIconDefinition, pencilIconVectorDefinition, searchCanvasIcons } from "./pencil-icon-provider.mjs";
 
 test("every Pencil 2.17 icon library resolves through a catalog provider", () => {
   const cases = [
@@ -19,7 +21,8 @@ test("every Pencil 2.17 icon library resolves through a catalog provider", () =>
     assert.equal(definition.paint, paint);
     if (size) {
       assert.deepEqual(definition.viewBox, [0, 0, size, size]);
-      assert.match(definition.geometry, /M0 0/u);
+      if (paint === "stroke") assert.match(definition.geometry, /M0 0/u);
+      else assert.match(definition.geometry, /Z$/u);
     } else {
       assert.equal(definition.content, "arrow_back");
     }
@@ -57,6 +60,26 @@ test("provider lookup never substitutes a different supported icon weight", () =
   assert.ok(pencilIconDefinition("phosphor", "push-pin", 400));
 });
 
+test("explicit Phosphor catalog variants are authoritative over the weight field", () => {
+  for (const variant of ["thin", "light", "bold", "fill", "duotone"]) {
+    const definition = pencilIconDefinition("phosphor", `push-pin-${variant}`, 600);
+    assert.ok(definition, `push-pin-${variant} should resolve independently of weight`);
+    assert.equal(definition.paint, "fill");
+  }
+  assert.equal(pencilIconDefinition("phosphor", "push-pin", 600), null);
+});
+
+test("every bundled Phosphor icon and alias resolves from the complete catalog", () => {
+  const names = [...Object.keys(phosphor.icons ?? {}), ...Object.keys(phosphor.aliases ?? {})];
+  for (const name of names) {
+    const hasExplicitVariant = /-(?:thin|light|bold|fill|duotone)$/u.test(name);
+    assert.ok(
+      pencilIconDefinition("phosphor", name, hasExplicitVariant ? 600 : 400),
+      `${name} should resolve`,
+    );
+  }
+});
+
 test("Material Symbols canonical ligature names resolve through Iconify catalog keys", () => {
   const outlined = pencilIconDefinition("Material Symbols Outlined", "auto_awesome", 400);
   const rounded = pencilIconDefinition("Material Symbols Rounded", "chat_bubble", 400);
@@ -65,6 +88,18 @@ test("Material Symbols canonical ligature names resolve through Iconify catalog 
   assert.equal(outlined.fontFamily, "Material Symbols Outlined");
   assert.equal(rounded.content, "chat_bubble");
   assert.equal(rounded.fontFamily, "Material Symbols Rounded");
+});
+
+test("icon search returns exact identifiers accepted by every matching provider", () => {
+  const result = searchCanvasIcons("progress activity", { limit: 10 });
+  assert.equal(result.total, 3);
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.items.map(({ library }) => library), [
+    "Material Symbols Outlined",
+    "Material Symbols Rounded",
+    "Material Symbols Sharp",
+  ]);
+  for (const item of result.items) assert.ok(pencilIconDefinition(item.library, item.icon));
 });
 
 test("every supported icon library exposes self-contained vector geometry for web export", () => {

@@ -65,6 +65,7 @@ test("registers only the public document lifecycle, editing, undo, and sharing s
     "documents.open",
     "documents.trash",
     "documents.undo",
+    "icons.search",
     "libraries.accept",
     "libraries.inspect",
     "libraries.publish",
@@ -75,6 +76,17 @@ test("registers only the public document lifecycle, editing, undo, and sharing s
   assert.deepEqual(
     await handlers.get("documents.open")({ documentId: "document-1" }, context),
     { documentId: "document-1", tabId: "tab-1" },
+  );
+  assert.deepEqual(
+    await handlers.get("icons.search")({ query: "loader", library: "lucide", limit: 2 }),
+    {
+      items: [
+        { library: "lucide", icon: "loader" },
+        { library: "lucide", icon: "loader-circle" },
+      ],
+      total: 4,
+      truncated: true,
+    },
   );
 });
 
@@ -104,10 +116,10 @@ test("documents.list continues through Account pages until it finds the requeste
 
   const result = await handlers.get("documents.list")({ query: "requested", limit: 1 });
 
-  assert.deepEqual(result.items, [{ id: "match", title: "Requested design" }]);
+  assert.deepEqual(result.items, [{ id: "match", title: "Requested design", module: null }]);
   assert.deepEqual(paths, [
-    "/projects?limit=100",
-    "/projects?limit=100&cursor=page-2",
+    "/projects?limit=100&projectionFields=module",
+    "/projects?limit=100&projectionFields=module&cursor=page-2",
   ]);
 });
 
@@ -362,8 +374,8 @@ test("execute reads and commits legacy text directions through their canonical a
       async request(request) {
         if ((request.method ?? "GET") === "GET") return base.request(request);
         requests.push(request);
-        if (request.path === "/projects/document-1/updates") return response(200, { sequence: 8 });
-        if (request.path === "/projects/document-1/snapshots") return response(200, { throughSequence: 8 });
+        if (request.path === "/projects/document-1/updates") return response(200, { sequence: 17 });
+        if (request.path === "/projects/document-1/snapshots") return response(200, { throughSequence: 17 });
         throw new Error(`Unexpected request ${request.method} ${request.path}`);
       },
     },
@@ -382,7 +394,7 @@ test("execute reads and commits legacy text directions through their canonical a
     code: 'Update("#instance", { descendants: { label: { content: "New" } } }); Insert(null, { id: "new-text", type: "text", content: "New", textAlign: "right" });',
   });
   assert.equal(changed.changed, true);
-  assert.equal(changed.sequence, 8);
+  assert.equal(changed.sequence, 17);
   const snapshot = requests.find((request) => request.path === "/projects/document-1/snapshots");
   const projection = decodeJson(snapshot.body).projection;
   assert.equal(projection.children[0].children[0].textAlign, "start");
@@ -424,6 +436,136 @@ test("large mutations retain touched IDs but bound detailed inspection with a su
   assert.deepEqual(result.inspectionSummary, { total: 62, returned: 50, truncated: true });
 });
 
+test("a durable execute receipt does not wait for periodic snapshot compaction", async () => {
+  const handlers = new Map();
+  const source = {
+    version: "2.17",
+    module: "generic",
+    axes: {},
+    variables: {},
+    paragraphStyles: {},
+    imports: {},
+    flows: [],
+    children: [{ id: "root", type: "frame", width: 100, height: 100, children: [] }],
+  };
+  const model = createDocumentModel(source);
+  const state = encodeState(model);
+  model.doc.destroy();
+  let resolveSnapshot;
+  const snapshotResponse = new Promise((resolve) => {
+    resolveSnapshot = resolve;
+  });
+  let snapshotStarted = false;
+  globalThis.penkra = {
+    account: {
+      async request(request) {
+        if (request.path === "/projects/document-1?chunked=auto") {
+          return response(200, {
+            id: "document-1",
+            title: "Design",
+            access: "owner",
+            ownerAccountId: "account-1",
+            snapshot: { throughSequence: 0, state, projection: source },
+            updates: [],
+          });
+        }
+        if (request.path === "/projects/document-1/blobs") return response(200, { items: [] });
+        if (request.path === "/projects/document-1/updates") return response(200, { sequence: 10 });
+        if (request.path === "/projects/document-1/snapshots") {
+          snapshotStarted = true;
+          return snapshotResponse;
+        }
+        throw new Error(`Unexpected request ${request.method} ${request.path}`);
+      },
+    },
+    operations: { handle: (name, handler) => handlers.set(name, handler) },
+  };
+  await import(`./operations.mjs?detached-compaction-test=${Date.now()}`);
+
+  const result = await handlers.get("documents.execute")({
+    documentId: "document-1",
+    code: 'Insert("#root", { id: "child", type: "rectangle", width: 1, height: 1 });',
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.sequence, 10);
+  assert.equal(snapshotStarted, true);
+  resolveSnapshot(response(201, { throughSequence: 10 }));
+  await snapshotResponse;
+});
+
+test("the next operation materializes an appended update before snapshot compaction", async () => {
+  const handlers = new Map();
+  const source = {
+    version: "2.17",
+    module: "generic",
+    axes: {},
+    variables: {},
+    paragraphStyles: {},
+    imports: {},
+    flows: [],
+    children: [{ id: "root", type: "frame", width: 100, height: 100, children: [] }],
+  };
+  const model = createDocumentModel(source);
+  let snapshot = { throughSequence: 7, state: encodeState(model), projection: source };
+  model.doc.destroy();
+  let nextSequence = 8;
+  const updates = [];
+  let projectReads = 0;
+  globalThis.penkra = {
+    account: {
+      async request(request) {
+        if (request.path === "/projects/document-1?chunked=auto") {
+          projectReads += 1;
+          return response(200, {
+            id: "document-1",
+            title: "Design",
+            access: "owner",
+            ownerAccountId: "account-1",
+            snapshot,
+            updates,
+          });
+        }
+        if (request.path === "/projects/document-1/blobs") return response(200, { items: [] });
+        if (request.path === "/projects/document-1/updates") {
+          const body = decodeJson(request.body);
+          const sequence = nextSequence++;
+          updates.push({ sequence, update: body.update });
+          return response(200, { sequence });
+        }
+        if (request.path === "/projects/document-1/snapshots") {
+          const body = decodeJson(request.body);
+          snapshot = {
+            throughSequence: body.throughSequence,
+            state: body.state,
+            projection: body.projection,
+          };
+          return response(201, { throughSequence: body.throughSequence });
+        }
+        throw new Error(`Unexpected request ${request.method} ${request.path}`);
+      },
+    },
+    operations: { handle: (name, handler) => handlers.set(name, handler) },
+  };
+  await import(`./operations.mjs?retained-state-test=${Date.now()}`);
+  const execute = handlers.get("documents.execute");
+
+  const first = await execute({
+    documentId: "document-1",
+    code: 'Insert("#root", { id: "first", type: "rectangle", width: 1, height: 1 });',
+  });
+  const readsAfterFirst = projectReads;
+  const second = await execute({
+    documentId: "document-1",
+    code: 'return Get("#first")[0]?.node.type ?? null;',
+  });
+
+  assert.equal(first.sequence, 8);
+  assert.equal(second.sequence, 8);
+  assert.equal(second.result, "rectangle");
+  assert.equal(projectReads - readsAfterFirst, 1);
+});
+
 test("execute uploads a direct image before committing its durable asset path", async () => {
   const handlers = new Map();
   const requests = [];
@@ -461,10 +603,10 @@ test("execute uploads a direct image before committing its durable asset path", 
           });
         }
         if (request.path === "/projects/document-1/updates") {
-          return response(200, { sequence: 8 });
+          return response(200, { sequence: 17 });
         }
         if (request.path === "/projects/document-1/snapshots") {
-          return response(200, { throughSequence: 8 });
+          return response(200, { throughSequence: 17 });
         }
         throw new Error(`Unexpected request ${request.method} ${request.path}`);
       },
@@ -478,7 +620,7 @@ test("execute uploads a direct image before committing its durable asset path", 
   });
 
   assert.equal(result.structuredContent.changed, true);
-  assert.equal(result.structuredContent.sequence, 8);
+  assert.equal(result.structuredContent.sequence, 17);
   assert.match(result.structuredContent.operationId, /^[0-9a-f-]{36}$/u);
   assert.equal(result.content[0].mimeType, "image/png");
   const uploadIndex = requests.findIndex(
