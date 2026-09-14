@@ -112,6 +112,7 @@ const state = {
   currentProfile: null,
   trashItems: [],
   trashTotalCount: 0,
+  trashMatchingCount: 0,
   trashExpiringSoonCount: 0,
   trashNextCursor: null,
   trashLoadingMore: false,
@@ -582,6 +583,7 @@ async function showTrash() {
       if (state.route !== "trash") return;
       state.trashItems = result.items;
       state.trashTotalCount = result.totalCount;
+      state.trashMatchingCount = result.matchingCount;
       state.trashExpiringSoonCount = result.expiringSoonCount;
       state.trashNextCursor = result.pageInfo.nextCursor;
       state.loading = false;
@@ -606,6 +608,7 @@ async function loadMoreTrash() {
     state.trashItems.push(...result.items.filter((item) => !known.has(`${item.kind}:${item.id}`)));
     state.trashNextCursor = result.pageInfo.nextCursor;
     state.trashTotalCount = result.totalCount;
+    state.trashMatchingCount = result.matchingCount;
     state.trashExpiringSoonCount = result.expiringSoonCount;
   } catch (error) {
     state.error = message(error);
@@ -1435,7 +1438,10 @@ function renderTrash() {
 }
 
 function renderTrashTable() {
-  const footer = `${state.trashTotalCount} item${state.trashTotalCount === 1 ? "" : "s"}${state.trashExpiringSoonCount ? ` · ${state.trashExpiringSoonCount} expiring soon` : ""}`;
+  const visibleCount = state.trashMatchingCount;
+  const visibleLabel = `${visibleCount} item${visibleCount === 1 ? "" : "s"}`;
+  const totalLabel = `${state.trashTotalCount} item${state.trashTotalCount === 1 ? "" : "s"} total`;
+  const footer = `${state.trashQuery ? `${visibleLabel} · ${totalLabel}` : visibleLabel}${state.trashExpiringSoonCount ? ` · ${state.trashExpiringSoonCount} expiring soon` : ""}`;
   return `<section class="trash-table" aria-label="Deleted designs and folders">
     <div class="trash-table-head" role="row"><span>NAME</span><span>WAS IN</span><span>DELETED</span><span>BY</span><span aria-hidden="true"></span></div>
     <div class="trash-table-body">${state.trashItems.map(trashRow).join("")}</div>

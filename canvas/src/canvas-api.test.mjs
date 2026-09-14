@@ -55,7 +55,7 @@ test("Canvas API exposes one paginated searchable Trash collection and atomic em
         calls.push(input);
         return response(200, input.method === "DELETE"
           ? { permanentlyDeleted: true, documentCount: 0, folderCount: 0 }
-          : { items: [], pageInfo: { nextCursor: null }, totalCount: 0, expiringSoonCount: 0 });
+          : { items: [], pageInfo: { nextCursor: null }, totalCount: 0, matchingCount: 0, expiringSoonCount: 0 });
       },
       subscribe: async () => () => undefined,
     },
