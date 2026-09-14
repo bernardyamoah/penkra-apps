@@ -740,6 +740,7 @@ async function openDocument(documentId) {
     const payload = await performanceMonitor.measureAsync(
       "document.fetch",
       () => api.getDocument(documentId, {
+        loadAssets: false,
         onMetadata: (metadata) => {
           if (state.route !== "editor" || state.document?.id !== documentId || !state.loading) return;
           state.document = {
@@ -756,19 +757,17 @@ async function openDocument(documentId) {
       }),
       { documentId },
     );
-    const assetDescriptors = payload.assets ?? [];
     const cachedAssets = documentAssetCache.take(documentId);
     state.assets = cachedAssets;
     const assetHydration = performanceMonitor.measureAsync(
       "document.assets",
-      () => hydrateDocumentAssets(api, documentId, assetDescriptors, cachedAssets, {
-        rasterizeSvg: rasterizeOpenPencilSvgAsset,
-      }),
-      {
-        documentId,
-        assets: assetDescriptors.length,
-        assetBytes: assetDescriptors.reduce((total, asset) => total + Number(asset.size ?? 0), 0),
+      async () => {
+        const assetDescriptors = await api.listAssets(documentId);
+        return hydrateDocumentAssets(api, documentId, assetDescriptors, cachedAssets, {
+          rasterizeSvg: rasterizeOpenPencilSvgAsset,
+        });
       },
+      { documentId },
     );
     state.document = {
       ...payload,
