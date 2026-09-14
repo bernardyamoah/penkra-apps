@@ -1,4 +1,5 @@
 import { createCanvasApi } from "./canvas-api.mjs";
+import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
 import { createBlankDocumentSource } from "./blank-document.mjs";
 import { createDocumentCollectionLifecycle } from "./document-collection-lifecycle.mjs";
 import { hasUnloadedDocumentImages, hydrateDocumentAssets } from "./document-assets.mjs";
@@ -92,6 +93,7 @@ const state = {
   folders: [],
   recentFolders: [],
   currentFolder: null,
+  activeFolderId: null,
   folderDocuments: [],
   folderChildren: [],
   libraryLoaded: false,
@@ -109,6 +111,9 @@ const state = {
   trashLoaded: false,
   shellReady: false,
   loading: true,
+  fatalError: false,
+  collectionCacheAccountId: null,
+  collectionCacheQueued: false,
   error: null,
   document: null,
   assets: new Map(),
@@ -219,15 +224,18 @@ async function bootstrap() {
     const identity = await runtime.identity.get();
     if (!identity.subject) {
       state.loading = false;
+      state.fatalError = true;
       state.error = "Sign in to your Penkra Account to use Canvas.";
       render();
       return;
     }
+    restoreCollectionCache(identity.subject);
     state.currentProfile = await runtime.account.profile();
     state.shellReady = true;
     await routes.showDefaultLibrary();
   } catch (error) {
     state.loading = false;
+    state.fatalError = true;
     state.error = message(error);
     render();
   }
@@ -236,8 +244,10 @@ async function bootstrap() {
 async function showLibrary() {
   closeDocument();
   state.currentFolder = null;
+  state.activeFolderId = null;
   state.route = "library";
-  state.loading = !state.shellReady;
+  state.loading = false;
+  state.fatalError = false;
   state.error = null;
   render();
   startFolderSubscription();
@@ -247,6 +257,7 @@ async function showLibrary() {
     apply: (documents) => {
       if (state.route !== "library") return;
       state.documents = documents.map(withModule);
+      persistCollectionCache();
       state.error = null;
       if (state.libraryLoaded) render();
       void loadDocumentThumbnails(state.documents).then(() => {
@@ -255,16 +266,18 @@ async function showLibrary() {
     },
     onError: handleDocumentCollectionError,
   });
-  await Promise.all([folders, documents]);
-  if (state.route !== "library") return;
-  state.libraryLoaded = true;
-  state.loading = false;
-  render();
+  void Promise.all([folders, documents]).then(() => {
+    if (state.route !== "library") return;
+    state.libraryLoaded = true;
+    render();
+  }).catch((error) => handleDocumentCollectionError(error, { phase: "load" }));
 }
 
 async function showFolder(folderId) {
   closeDocument();
   state.route = "folder";
+  state.activeFolderId = folderId;
+  state.fatalError = false;
   state.error = null;
   const cached = state.folderCollections.get(folderId);
   const known = cached?.folder ?? knownFolder(folderId);
@@ -275,14 +288,18 @@ async function showFolder(folderId) {
   render();
   startFolderSubscription(folderId);
   const opened = api.openFolder(folderId);
-  await Promise.all([
+  void Promise.all([
     opened.then((folder) => {
       const cachedCollection = state.folderCollections.get(folderId);
       if (cachedCollection) state.folderCollections.set(folderId, { ...cachedCollection, folder });
-      if (state.route === "folder" && state.currentFolder?.id === folderId) state.currentFolder = folder;
+      if (state.route === "folder" && state.activeFolderId === folderId) {
+        state.currentFolder = folder;
+        state.loading = false;
+        render();
+      }
     }),
     refreshFolderCollection(folderId, { folderRequest: opened }),
-  ]);
+  ]).catch((error) => handleDocumentCollectionError(error, { phase: "load" }));
 }
 
 function knownFolder(folderId) {
@@ -292,16 +309,20 @@ function knownFolder(folderId) {
 
 function refreshLibraryFolders() {
   if (state.libraryFolderRefresh) return state.libraryFolderRefresh;
-  const refresh = Promise.all([
-    loadEveryFolderPage({ view: "roots" }),
-    loadEveryFolderPage({ view: "recent", limit: 10 }),
-  ]).then(([roots, recentFolders]) => {
-    state.folders = roots;
-    state.recentFolders = recentFolders.slice(0, 10);
+  const roots = loadEveryFolderPage({ view: "roots" }).then((items) => {
+    state.folders = items;
+    persistCollectionCache();
+    if (state.route === "library" && state.libraryLoaded) render();
+  });
+  const recent = loadEveryFolderPage({ view: "recent", limit: 10 }).then((items) => {
+    state.recentFolders = items.slice(0, 10);
+    persistCollectionCache();
+    if (state.route === "library" && state.libraryLoaded) render();
+  });
+  const refresh = Promise.all([roots, recent]).then(() => {
     void loadFolderGrants([...state.folders, ...state.recentFolders]).then(() => {
       if (state.route === "library") render();
     });
-    if (state.route === "library" && state.libraryLoaded) render();
   }).finally(() => {
     if (state.libraryFolderRefresh === refresh) state.libraryFolderRefresh = null;
   });
@@ -322,7 +343,8 @@ function refreshFolderCollection(folderId, { folderRequest = null } = {}) {
   ]).then(([folder, children, documents]) => {
     const collection = { folder, children, documents: documents.map(withModule) };
     state.folderCollections.set(folderId, collection);
-    if (state.route !== "folder" || state.currentFolder?.id !== folderId) return;
+    persistCollectionCache();
+    if (state.route !== "folder" || state.activeFolderId !== folderId) return;
     state.currentFolder = collection.folder;
     state.folderChildren = collection.children;
     state.folderDocuments = collection.documents;
@@ -330,13 +352,13 @@ function refreshFolderCollection(folderId, { folderRequest = null } = {}) {
     state.error = null;
     render();
     void loadFolderGrants([folder, ...children]).then(() => {
-      if (state.route === "folder" && state.currentFolder?.id === folderId) render();
+      if (state.route === "folder" && state.activeFolderId === folderId) render();
     });
     void loadDocumentThumbnails(collection.documents).then(() => {
-      if (state.route === "folder" && state.currentFolder?.id === folderId) render();
+      if (state.route === "folder" && state.activeFolderId === folderId) render();
     });
   }).catch((error) => {
-    if (state.route === "folder" && state.currentFolder?.id === folderId) {
+    if (state.route === "folder" && state.activeFolderId === folderId) {
       state.loading = false;
       state.error = message(error);
       render();
@@ -378,6 +400,35 @@ function withModule(document) {
   return { ...document, module: document.projection?.module ?? null };
 }
 
+function restoreCollectionCache(accountId) {
+  state.collectionCacheAccountId = accountId;
+  const cached = readCollectionCache(globalThis.localStorage, accountId);
+  if (!cached) return;
+  state.documents = cached.documents.map(withModule);
+  state.folders = cached.folders;
+  state.recentFolders = cached.recentFolders;
+  state.folderCollections = cached.folderCollections;
+  state.libraryLoaded = true;
+}
+
+function persistCollectionCache() {
+  if (!state.collectionCacheAccountId || state.collectionCacheQueued) return;
+  state.collectionCacheQueued = true;
+  queueMicrotask(() => {
+    state.collectionCacheQueued = false;
+    try {
+      writeCollectionCache(globalThis.localStorage, state.collectionCacheAccountId, {
+        documents: state.documents,
+        folders: state.folders,
+        recentFolders: state.recentFolders,
+        folderCollections: state.folderCollections,
+      });
+    } catch (error) {
+      console.warn("Canvas could not cache collection summaries.", error);
+    }
+  });
+}
+
 function knownDocument(documentId) {
   return [...state.documents, ...state.folderDocuments, ...state.trashedDocuments]
     .find((document) => document.id === documentId) ?? null;
@@ -405,6 +456,7 @@ function upsertFolderSummary(folder) {
     state.folderChildren = state.folderCollections.get(state.currentFolder.id)?.children ?? state.folderChildren;
   }
   invalidateFolderTree();
+  persistCollectionCache();
 }
 
 function removeFolderSummary(folderId) {
@@ -419,6 +471,7 @@ function removeFolderSummary(folderId) {
     });
   }
   invalidateFolderTree();
+  persistCollectionCache();
 }
 
 function upsertDocumentSummary(document, previousFolderId = undefined) {
@@ -438,7 +491,10 @@ function upsertDocumentSummary(document, previousFolderId = undefined) {
       state.folderDocuments.unshift(normalized);
     }
   }
-  if (oldFolderId === normalized.folderId) return;
+  if (oldFolderId === normalized.folderId) {
+    persistCollectionCache();
+    return;
+  }
   adjustFolderDesignCount(oldFolderId, -1);
   adjustFolderDesignCount(normalized.folderId, 1);
 }
@@ -454,6 +510,7 @@ function removeDocumentSummary(documentId) {
     });
   }
   adjustFolderDesignCount(existing?.folderId, -1);
+  persistCollectionCache();
 }
 
 function adjustFolderDesignCount(folderId, delta) {
@@ -472,6 +529,7 @@ function adjustFolderDesignCount(folderId, delta) {
       children: collection.children.map(update),
     });
   }
+  persistCollectionCache();
 }
 
 function invalidateFolderTree() {
@@ -481,13 +539,19 @@ function invalidateFolderTree() {
 async function showTrash() {
   closeDocument();
   state.currentFolder = null;
+  state.activeFolderId = null;
   state.route = "trash";
-  state.loading = !state.shellReady;
+  state.loading = false;
+  state.fatalError = false;
   state.error = null;
   state.contextMenu = null;
   render();
-  state.trashedFolders = await loadEveryFolderPage({ view: "trash" });
-  await documentCollectionLifecycle.start({
+  const folders = loadEveryFolderPage({ view: "trash" }).then((items) => {
+    if (state.route !== "trash") return;
+    state.trashedFolders = items;
+    render();
+  });
+  const documents = documentCollectionLifecycle.start({
     load: () => loadEveryDocumentPage(api.listTrash),
     apply: (documents) => {
       if (state.route !== "trash") return;
@@ -499,6 +563,8 @@ async function showTrash() {
     },
     onError: handleDocumentCollectionError,
   });
+  void Promise.all([folders, documents]).catch((error) =>
+    handleDocumentCollectionError(error, { phase: "load" }));
 }
 
 async function loadEveryDocumentPage(loadPage) {
@@ -527,7 +593,7 @@ function startFolderSubscription(folderId = null) {
   state.folderUnsubscribe = null;
   void api.subscribeToFolders(() => {
     invalidateFolderTree();
-    if (folderId && state.route === "folder" && state.currentFolder?.id === folderId) {
+    if (folderId && state.route === "folder" && state.activeFolderId === folderId) {
       void refreshFolderCollection(folderId).catch((error) => handleDocumentCollectionError(error, { phase: "load" }));
     } else if (!folderId && state.route === "library") {
       void refreshLibraryFolders().catch((error) => handleDocumentCollectionError(error, { phase: "load" }));
@@ -585,6 +651,7 @@ async function openDocument(documentId) {
   state.documentOpenStartedAt = performance.now();
   state.route = "editor";
   state.loading = true;
+  state.fatalError = false;
   state.error = null;
   render();
   try {
@@ -796,6 +863,7 @@ async function openDocument(documentId) {
       });
     } else {
       state.loading = false;
+      state.fatalError = true;
       state.error = message(error);
       render();
     }
@@ -1146,7 +1214,7 @@ function render() {
     root.innerHTML = `<main class="shell empty"><div><span class="muted">Loading Canvas…</span></div></main>`;
     return;
   }
-  if (state.error && !state.document) {
+  if (state.fatalError && state.error && !state.document) {
     root.innerHTML = `<main class="shell empty"><div><h2>Canvas couldn’t open</h2><p>${escapeHtml(state.error)}</p><button class="button" data-action="retry">Try again</button></div></main>`;
     bindCommon();
     return;
@@ -1239,6 +1307,7 @@ function renderFolder() {
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${folderTopbar(folder)}</div>
     <div class="folder-content">
+    ${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
     <header class="folder-overview">
       <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folders.length} folder${folders.length === 1 ? "" : "s"} · ${folder.designCount} design${folder.designCount === 1 ? "" : "s"} · Updated ${escapeHtml(relativeTime(folder.updatedAt))}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
     </header>
