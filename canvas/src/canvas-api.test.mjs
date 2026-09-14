@@ -320,8 +320,11 @@ test("Canvas accepts an automatically inlined snapshot without range requests", 
 
 test("Canvas starts the document and asset-manifest reads together", async () => {
   const started = [];
+  const metadata = [];
   let releaseProject;
+  let releaseAssets;
   const projectReady = new Promise((resolve) => { releaseProject = resolve; });
+  const assetsReady = new Promise((resolve) => { releaseAssets = resolve; });
   const api = createCanvasApi({
     account: {
       request: async (input) => {
@@ -334,20 +337,28 @@ test("Canvas starts the document and asset-manifest reads together", async () =>
             updates: [],
           });
         }
-        if (input.path === "/projects/project-id/blobs") return response(200, { items: [] });
+        if (input.path === "/projects/project-id/blobs") {
+          await assetsReady;
+          return response(200, { items: [] });
+        }
         throw new Error(`Unexpected request ${input.path}`);
       },
       subscribe: async () => () => undefined,
     },
   });
 
-  const opening = api.getDocument("project-id");
+  const opening = api.getDocument("project-id", {
+    onMetadata: (project) => metadata.push(project.id),
+  });
   await Promise.resolve();
   assert.deepEqual(started, [
     "/projects/project-id?chunked=auto",
     "/projects/project-id/blobs",
   ]);
   releaseProject();
+  while (metadata.length === 0) await Promise.resolve();
+  assert.deepEqual(metadata, ["project-id"]);
+  releaseAssets();
   await opening;
 });
 

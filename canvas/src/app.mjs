@@ -164,6 +164,7 @@ const state = {
   activeTool: "select",
   spacePressed: false,
   engineSurface: null,
+  enginePreparation: null,
   engineMountGeneration: 0,
   engineViewport: null,
   engineReady: false,
@@ -186,9 +187,17 @@ const state = {
 
 const visibleDocumentRestore = createVisibleDocumentRestore({
   openDocument,
-  onQueued: () => {
+  onQueued: (documentId) => {
+    const knownDocument = state.documents.find((document) => document.id === documentId);
     closeDocument();
     state.route = "editor";
+    state.document = {
+      id: documentId,
+      title: knownDocument?.title ?? "Canvas",
+      module: knownDocument?.module ?? "generic",
+      folderId: knownDocument?.folderId ?? null,
+    };
+    state.currentFolder = state.document.folderId ? knownFolder(state.document.folderId) : null;
     state.loading = true;
     state.fatalError = false;
     state.error = null;
@@ -702,26 +711,51 @@ async function navigateToDocument(documentId) {
 }
 
 async function openDocument(documentId) {
+  const knownDocument = state.documents.find((document) => document.id === documentId)
+    ?? state.editorDocuments.find((document) => document.id === documentId)
+    ?? (state.document?.id === documentId ? state.document : null);
   closeDocument();
   state.documentOpenStartedAt = performance.now();
   state.route = "editor";
+  state.document = {
+    id: documentId,
+    title: knownDocument?.title ?? "Canvas",
+    module: knownDocument?.module ?? "generic",
+    folderId: knownDocument?.folderId ?? null,
+  };
+  state.currentFolder = state.document.folderId ? knownFolder(state.document.folderId) : null;
   state.loading = true;
   state.fatalError = false;
   state.error = null;
   render();
   try {
-    const [payload] = await Promise.all([
-      performanceMonitor.measureAsync(
-        "document.fetch",
-        () => api.getDocument(documentId),
-        { documentId },
-      ),
-      performanceMonitor.measureAsync(
-        "engine.canvaskit-ready",
-        () => prepareOpenPencilEngine(),
-        { documentId },
-      ),
-    ]);
+    state.enginePreparation = performanceMonitor.measureAsync(
+      "engine.canvaskit-ready",
+      () => prepareOpenPencilEngine(),
+      { documentId },
+    ).then(
+      () => ({ error: null }),
+      (error) => ({ error }),
+    );
+    const payload = await performanceMonitor.measureAsync(
+      "document.fetch",
+      () => api.getDocument(documentId, {
+        onMetadata: (metadata) => {
+          if (state.route !== "editor" || state.document?.id !== documentId || !state.loading) return;
+          state.document = {
+            ...state.document,
+            ...metadata,
+            module: metadata.snapshot?.projection?.module
+              ?? metadata.module
+              ?? state.document.module
+              ?? "generic",
+          };
+          state.currentFolder = metadata.folderId ? knownFolder(metadata.folderId) : null;
+          render();
+        },
+      }),
+      { documentId },
+    );
     const assetDescriptors = payload.assets ?? [];
     const cachedAssets = documentAssetCache.take(documentId);
     state.assets = cachedAssets;
@@ -995,6 +1029,7 @@ function closeDocument() {
   state.spacePressed = false;
   state.engineViewport = null;
   state.engineReady = false;
+  state.enginePreparation = null;
   state.engineDocumentDirty = false;
   state.engineDocumentDirtyReason = null;
   state.compatibilityIssues = [];
@@ -1283,7 +1318,10 @@ function render() {
     : null;
   if (!retainedHost) disposeEngineSurface();
   if (state.loading) {
-    root.innerHTML = `<main class="shell empty"><div><span class="muted">Loading Canvas…</span></div></main>`;
+    root.innerHTML = state.route === "editor" && state.document
+      ? renderEditorLoading()
+      : `<main class="shell empty"><div><span class="muted">Loading Canvas…</span></div></main>`;
+    bindCommon();
     return;
   }
   if (state.fatalError && state.error && !state.document) {
@@ -1321,6 +1359,7 @@ function render() {
         state.engineDocumentDirtyReason = null;
       }
     } else scheduleEditorSurfaceMount();
+    if (state.engineReady) scheduleCompatibilityAnalysis(state.document.id);
   }
   else bindLibrary();
   focusRequestedControl();
@@ -1328,6 +1367,29 @@ function render() {
     route: state.route,
     nodes: state.documentNodes?.length ?? 0,
   });
+}
+
+function renderEditorLoading() {
+  return `<main class="shell editor">
+    <header class="editor-header">
+      <div class="editor-header-left">
+        <button class="icon-button editor-panel-toggle" disabled aria-label="Layers panel unavailable while opening">${icon("panel-left")}</button>
+        <button class="icon-button editor-back" disabled aria-label="Opening design">${icon("back")}</button>
+        <div class="editor-title"><input size="${Math.min(42, Math.max(1, state.document.title.length))}" value="${escapeHtml(state.document.title)}" aria-label="Document title" disabled /></div>
+        <span class="module-badge">${escapeHtml(moduleLabel(state.document.module))}</span>
+        <div class="sync" data-state="syncing" role="status" aria-live="polite"><i class="sync-dot"></i><span>Opening…</span></div>
+      </div>
+      <div class="editor-header-right">
+        <button class="button" disabled>Share</button>
+        <button class="icon-button editor-panel-toggle" disabled aria-label="Design panel unavailable while opening">${icon("panel-right")}</button>
+      </div>
+    </header>
+    <div class="editor-body layers-closed inspector-closed">
+      <section class="viewport" tabindex="0" aria-label="Canvas viewport" aria-busy="true">
+        <div class="openpencil-host"><div class="engine-loading" role="status" aria-live="polite">Rendering design…</div></div>
+      </section>
+    </div>
+  </main>`;
 }
 
 function renderDocumentUnavailable() {
@@ -1566,19 +1628,6 @@ function renderEditor() {
   const document = currentMaterializedDocument();
   const documentNodes = currentDocumentNodes();
   const layerNodes = currentVisibleLayerNodes(documentNodes);
-  if (state.compatibilityDocument !== document) {
-    state.compatibilityIssues = performanceMonitor.measure(
-      "document.compatibility",
-      () => analyzeOpenPencilCompatibility(
-        document,
-        state.assets,
-        currentPreparedRenderDocument(),
-      ),
-      { documentId: state.document.id, nodes: documentNodes.length },
-    );
-    state.compatibilityNodeIds = new Set(state.compatibilityIssues.map((issue) => issue.nodeId));
-    state.compatibilityDocument = document;
-  }
   const selection = currentCanvasSelection();
   const unsupported = state.compatibilityIssues;
   const unsupportedNodeCount = state.compatibilityNodeIds.size;
@@ -1608,7 +1657,7 @@ function renderEditor() {
         ${renderLayersPanelHeader(layerNodes)}
         <div class="panel-scroll">${state.layersOpen ? renderLayersPanelContent(layerNodes) : ""}</div>
       </aside>
-      <section class="viewport" data-role="viewport" data-tool="${state.activeTool}" tabindex="0" aria-label="Canvas viewport">
+      <section class="viewport" data-role="viewport" data-tool="${state.activeTool}" tabindex="0" aria-label="Canvas viewport" aria-busy="${state.engineReady ? "false" : "true"}">
         <div class="openpencil-host" data-role="openpencil-surface"><div class="engine-loading" role="status" aria-live="polite">Rendering design…</div></div>
         ${state.realtimeConnection === REALTIME_RECONNECTING && navigator.onLine ? `<div class="connection-banner">${icon("refresh")}<span>Reconnecting and merging changes</span></div>` : ""}
         ${unsupported.length ? `<div class="compatibility-banner"><span>${unsupportedNodeCount} object${unsupportedNodeCount === 1 ? " needs" : "s need"} compatibility review</span><button class="button" data-action="compatibility">Review</button></div>` : ""}
@@ -1619,13 +1668,21 @@ function renderEditor() {
   </main>${renderDialog()}${renderToast()}`;
 }
 
-function mountEditorSurface() {
+async function mountEditorSurface(generation, documentId) {
   if (state.accessRemoved || !state.model) return;
   const host = root.querySelector('[data-role="openpencil-surface"]');
   if (!host) return;
-  const documentId = state.document.id;
   const firstFrameStartedAt = performance.now();
   try {
+    const preparation = await state.enginePreparation;
+    if (preparation?.error) throw preparation.error;
+    if (
+      generation !== state.engineMountGeneration
+      || state.route !== "editor"
+      || state.document?.id !== documentId
+      || !state.model
+      || state.engineSurface
+    ) return;
     let surface;
     surface = performanceMonitor.measure("engine.mount", () => mountOpenPencilSurface(host, currentMaterializedDocument(), {
       visible: state.appTabActive,
@@ -1643,7 +1700,9 @@ function mountEditorSurface() {
         state.engineReady = true;
         renderHistoryControls();
         renderLayersTree();
+        host.closest('[data-role="viewport"]')?.setAttribute("aria-busy", "false");
         host.querySelector(".engine-loading")?.remove();
+        scheduleCompatibilityAnalysis(documentId);
         performanceMonitor.record(
           "engine.first-frame",
           performance.now() - firstFrameStartedAt,
@@ -1708,6 +1767,33 @@ function mountEditorSurface() {
   }
 }
 
+function scheduleCompatibilityAnalysis(documentId) {
+  const analyze = () => {
+    if (
+      state.route !== "editor"
+      || state.document?.id !== documentId
+      || !state.model
+      || !state.engineReady
+    ) return;
+    const document = currentMaterializedDocument();
+    if (state.compatibilityDocument === document) return;
+    state.compatibilityIssues = performanceMonitor.measure(
+      "document.compatibility",
+      () => analyzeOpenPencilCompatibility(
+        document,
+        state.assets,
+        currentPreparedRenderDocument(),
+      ),
+      { documentId, nodes: state.documentNodes?.length ?? 0 },
+    );
+    state.compatibilityNodeIds = new Set(state.compatibilityIssues.map((issue) => issue.nodeId));
+    state.compatibilityDocument = document;
+    render();
+  };
+  if (typeof requestIdleCallback === "function") requestIdleCallback(analyze, { timeout: 500 });
+  else setTimeout(analyze, 0);
+}
+
 function scheduleEditorSurfaceMount() {
   const generation = ++state.engineMountGeneration;
   const documentId = state.document?.id;
@@ -1720,7 +1806,7 @@ function scheduleEditorSurfaceMount() {
       || !state.model
       || state.engineSurface
     ) return;
-    mountEditorSurface();
+    void mountEditorSurface(generation, documentId);
   }, 0);
   if (typeof requestAnimationFrame === "function" && document.visibilityState !== "hidden") {
     requestAnimationFrame(scheduleAfterPaint);
