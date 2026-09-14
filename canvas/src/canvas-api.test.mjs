@@ -362,6 +362,30 @@ test("Canvas starts the document and asset-manifest reads together", async () =>
   await opening;
 });
 
+test("Canvas can return a document snapshot without requesting its asset manifest", async () => {
+  const requested = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        requested.push(input.path);
+        if (input.path === "/projects/project-id?chunked=auto") {
+          return response(200, {
+            id: "project-id",
+            snapshot: { chunked: false, projection: { version: "2.17", children: [] }, state: "AA==" },
+            updates: [],
+          });
+        }
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const document = await api.getDocument("project-id", { loadAssets: false });
+  assert.deepEqual(requested, ["/projects/project-id?chunked=auto"]);
+  assert.deepEqual(document.assets, []);
+});
+
 test("Canvas reads large projections in bounded parallel server-sized ranges", async () => {
   const source = { children: [], payload: "x".repeat(100) };
   const bytes = new TextEncoder().encode(JSON.stringify(source, null, 2));
