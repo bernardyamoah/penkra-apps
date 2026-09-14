@@ -215,7 +215,7 @@ test("Canvas maps project projections and exact asset paths without changing the
     ["/projects/snapshot-uploads", { uploadId: "upload-id", projectId: "project-id", chunkSize: 1024 }],
     ["/projects/snapshot-uploads/upload-id/parts", { receivedBytes: 1 }],
     ["/projects/snapshot-uploads/upload-id/complete", { id: "project-id" }],
-    ["/projects/project-id?chunked=1", {
+    ["/projects/project-id?chunked=auto", {
       id: "project-id",
       snapshot: { throughSequence: 0, chunked: true },
       updates: [],
@@ -271,7 +271,7 @@ test("Canvas accepts an automatically inlined snapshot without range requests", 
     account: {
       request: async (input) => {
         calls.push(input.path);
-        if (input.path === "/projects/project-id?chunked=1") {
+        if (input.path === "/projects/project-id?chunked=auto") {
           return response(200, {
             id: "project-id",
             snapshot: { throughSequence: 0, state: "AQ==", projection },
@@ -292,8 +292,41 @@ test("Canvas accepts an automatically inlined snapshot without range requests", 
   assert.deepEqual(opened.snapshot.source, projection);
   assert.deepEqual(calls.sort(), [
     "/projects/project-id/blobs",
-    "/projects/project-id?chunked=1",
+    "/projects/project-id?chunked=auto",
   ]);
+});
+
+test("Canvas starts the document and asset-manifest reads together", async () => {
+  const started = [];
+  let releaseProject;
+  const projectReady = new Promise((resolve) => { releaseProject = resolve; });
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        started.push(input.path);
+        if (input.path === "/projects/project-id?chunked=auto") {
+          await projectReady;
+          return response(200, {
+            id: "project-id",
+            snapshot: { throughSequence: 0, state: "AQ==", projection: { children: [] } },
+            updates: [],
+          });
+        }
+        if (input.path === "/projects/project-id/blobs") return response(200, { items: [] });
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const opening = api.getDocument("project-id");
+  await Promise.resolve();
+  assert.deepEqual(started, [
+    "/projects/project-id?chunked=auto",
+    "/projects/project-id/blobs",
+  ]);
+  releaseProject();
+  await opening;
 });
 
 test("Canvas reads large projections in bounded parallel server-sized ranges", async () => {
@@ -326,7 +359,7 @@ test("opening an unmigrated document returns its projection without side effects
     account: {
       request: async (input) => {
         calls.push(input.path);
-        if (input.path === "/projects/legacy?chunked=1") {
+        if (input.path === "/projects/legacy?chunked=auto") {
           return response(200, { id: "legacy", title: "Legacy", snapshot: { throughSequence: 0, state: "AQ==", projection: source }, updates: [] });
         }
         if (input.path === "/projects/legacy/blobs") return response(200, { items: [] });
@@ -340,7 +373,7 @@ test("opening an unmigrated document returns its projection without side effects
 
   assert.deepEqual(opened.snapshot.source, source);
   assert.deepEqual(calls, [
-    "/projects/legacy?chunked=1",
+    "/projects/legacy?chunked=auto",
     "/projects/legacy/blobs",
   ]);
 });

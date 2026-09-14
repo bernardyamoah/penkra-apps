@@ -19,7 +19,7 @@ function readableDocumentAccount(source, requests) {
   return {
     async request(request) {
       requests.push(request);
-      if (request.path === "/projects/document-1?chunked=1") {
+      if (request.path === "/projects/document-1?chunked=auto") {
         return response(200, {
           id: "document-1",
           title: "Design",
@@ -314,7 +314,7 @@ test("execute converts a durable SVG asset into an atomic editable-path copy", a
     account: {
       async request(request) {
         requests.push(request);
-        if (request.path === "/projects/document-1?chunked=1") {
+        if (request.path === "/projects/document-1?chunked=auto") {
           return response(200, {
             id: "document-1",
             title: "Design",
@@ -477,7 +477,7 @@ test("documents.undo applies the backend's exact inverse and snapshots the resto
     account: {
       async request(request) {
         requests.push(request);
-        if (request.path === "/projects/document-1?chunked=1") {
+        if (request.path === "/projects/document-1?chunked=auto") {
           return response(200, {
             id: "document-1",
             title: "Design",
