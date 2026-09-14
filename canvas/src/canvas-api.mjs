@@ -49,12 +49,13 @@ export function createCanvasApi(runtime = globalThis.penkra) {
         projection: source,
         state: base64ToBytes(initialUpdate),
       }),
-    getDocument: async (id) => {
+    getDocument: async (id, options = {}) => {
       const encoded = encodeURIComponent(id);
-      const [project, assets] = await Promise.all([
-        request(`/${encoded}?chunked=auto`),
-        request(`/${encoded}/blobs`),
-      ]);
+      const projectRequest = request(`/${encoded}?chunked=auto`);
+      const assetsRequest = request(`/${encoded}/blobs`);
+      const project = await projectRequest;
+      options.onMetadata?.(project);
+      const assets = await assetsRequest;
       const snapshot = project.snapshot.chunked
         ? await readChunkedSnapshot(request, encoded, project.snapshot)
         : { ...project.snapshot, source: project.snapshot.projection };
@@ -193,10 +194,9 @@ function uploadedAsset(blob, path) {
   if (!blob || typeof blob !== "object") {
     throw new Error("Canvas asset upload completed without blob metadata.");
   }
-  // The Account blob projection identifies content, while the Pencil-relative
-  // path belongs to this document and is supplied on upload. Preserve that
-  // requested path at the Canvas boundary so callers always receive the
-  // durable fill URL, even when the backend projection omits it.
+  // The Account blob projection identifies content, while the document-relative path
+  // is supplied on upload. Preserve it so callers always receive the durable fill URL,
+  // even when the backend projection omits it.
   return { ...blob, path };
 }
 
