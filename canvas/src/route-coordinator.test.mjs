@@ -147,3 +147,31 @@ test("folder navigation is host-restorable", async () => {
     "folder:folder-1",
   ]);
 });
+
+test("slow route persistence does not serialize later visible navigation", async () => {
+  const calls = [];
+  const routeWrite = deferred();
+  const router = createRouteCoordinator({
+    isDocumentOpen: () => false,
+    openDocument: async () => undefined,
+    setRoute: async (route) => {
+      calls.push({ route });
+      await routeWrite.promise;
+    },
+    showDocumentUnavailable: async () => undefined,
+    showLibrary: async () => calls.push("library"),
+    showTrash: async () => calls.push("trash"),
+    showFolder: async (folderId) => calls.push(`folder:${folderId}`),
+  });
+
+  await router.navigateToFolder("folder-1");
+  await router.navigateToLibrary();
+
+  assert.deepEqual(calls, [
+    "folder:folder-1",
+    { route: { route: "/folder", state: { folderId: "folder-1" } } },
+    "library",
+    { route: { route: "/" } },
+  ]);
+  routeWrite.resolve();
+});

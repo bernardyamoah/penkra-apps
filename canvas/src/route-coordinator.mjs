@@ -1,6 +1,7 @@
 export function createRouteCoordinator({
   isDocumentOpen,
   openDocument,
+  onRouteError = () => undefined,
   setRoute,
   showDocumentUnavailable,
   showLibrary,
@@ -24,6 +25,10 @@ export function createRouteCoordinator({
     return enqueue(showLibrary);
   };
 
+  const persistRoute = (route) => {
+    void Promise.resolve(setRoute(route)).catch(onRouteError);
+  };
+
   const handleHostNavigation = (input) => {
     hostNavigationRequested = true;
     return enqueue(() => {
@@ -43,31 +48,31 @@ export function createRouteCoordinator({
     enqueue(async () => {
       await openDocument(documentId);
       if (!isDocumentOpen(documentId)) return;
-      await setRoute({ route: "/document", state: { documentId } });
+      persistRoute({ route: "/document", state: { documentId } });
     });
 
   const navigateToLibrary = () =>
     enqueue(async () => {
       await showLibrary();
-      await setRoute({ route: "/" });
+      persistRoute({ route: "/" });
     });
 
   const navigateToFolder = (folderId) =>
     enqueue(async () => {
       await showFolder(folderId);
-      await setRoute({ route: "/folder", state: { folderId } });
+      persistRoute({ route: "/folder", state: { folderId } });
     });
 
   const navigateToTrash = () =>
     enqueue(async () => {
       await showTrash();
-      await setRoute({ route: "/trash" });
+      persistRoute({ route: "/trash" });
     });
 
   const navigateToDocumentUnavailable = (input) =>
     enqueue(async () => {
       await showDocumentUnavailable(input);
-      await setRoute({ route: "/document-unavailable", state: input });
+      persistRoute({ route: "/document-unavailable", state: input });
     });
 
   return {
