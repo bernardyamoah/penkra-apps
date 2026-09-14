@@ -14,7 +14,7 @@ filesystem API.
 
 Host paths never enter the renderer. A picker or explicit host handoff grants an opaque handle to
 Explorer in one Space for the current desktop session; tabs in that App and Space can reuse it. The
-authoritative design is [`design/explorer.pen`](./design/explorer.pen).
+Canvas document named `Explorer - App` is the authoritative design artifact.
 
 The file tree watches loaded directories, preserves both scroll axes, supports conventional tree
 keyboard navigation, and uses a resizable rail. Editable text uses a bundled CodeMirror 6 surface;

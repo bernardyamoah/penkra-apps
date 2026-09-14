@@ -24,30 +24,52 @@ test("Canvas API stays inside the generic project namespace", async () => {
   assert.equal(calls[0].method, "GET");
 });
 
-test("Canvas API exposes recoverable Trash without overloading permanent deletion", async () => {
+test("Canvas API keeps recoverable and permanent document deletion separate", async () => {
   const calls = [];
   const api = createCanvasApi({
     account: {
       request: async (input) => {
         calls.push(input);
-        return response(200, input.path.includes("/trash")
-          ? { items: [], pageInfo: { nextCursor: null } }
-          : { id: "document-id" });
+        return response(200, { id: "document-id" });
       },
       subscribe: async () => () => undefined,
     },
   });
 
-  await api.listTrash("cursor-id");
   await api.deleteDocument("document-id");
   await api.restoreDocument("document-id");
   await api.permanentlyDeleteDocument("document-id");
 
   assert.deepEqual(calls.map(({ path, method }) => [path, method]), [
-    ["/projects/trash?limit=100&cursor=cursor-id", "GET"],
     ["/projects/document-id", "DELETE"],
     ["/projects/document-id/restore", "POST"],
     ["/projects/document-id/permanent", "DELETE"],
+  ]);
+});
+
+test("Canvas API exposes one paginated searchable Trash collection and atomic emptying", async () => {
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input);
+        return response(200, input.method === "DELETE"
+          ? { permanentlyDeleted: true, documentCount: 0, folderCount: 0 }
+          : { items: [], pageInfo: { nextCursor: null }, totalCount: 0, expiringSoonCount: 0 });
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  await api.listTrashItems("folder:bbae45e7-a867-42c6-9727-af47f4644c23", {
+    limit: 25,
+    query: "campaign",
+  });
+  await api.emptyTrash();
+
+  assert.deepEqual(calls.map(({ path, method }) => [path, method]), [
+    ["/projects/trash/items?limit=25&cursor=folder%3Abbae45e7-a867-42c6-9727-af47f4644c23&query=campaign", "GET"],
+    ["/projects/trash", "DELETE"],
   ]);
 });
 

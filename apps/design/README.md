@@ -1,10 +1,9 @@
 # Design
 
-`apps.pen` is the authoritative design source for the Apps App.
+The Canvas document named `Apps - App` is the authoritative design artifact for the Apps App.
 
-The standard App Bar primitive remains authoritative in `penkra/penkra.pen`. This
-directory owns the Apps-specific configuration and content states. Host previews of
-the App Bar are labeled as references and are not a second platform primitive.
+This directory documents Apps-specific product coverage. Host previews of the public App Bar are
+integration references, not a second platform primitive or design authority.
 
 Current app-owned states:
 

@@ -1,6 +1,6 @@
 # Design
 
-`browser.pen` is the authoritative design source for the Browser App.
+The Canvas document named `Browser - App` is the authoritative design artifact for the Browser App.
 
-The file will contain Browser-specific foundations, components, states, flows, and
-host-integration previews. Platform chrome remains authoritative in `penkra/penkra.pen`.
+It contains Browser-specific foundations, components, states, flows, and host-integration
+previews. Host chrome shown in a design is integration context, not App-owned UI.
