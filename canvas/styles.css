@@ -162,6 +162,35 @@ h1, h2, h3, p { margin: 0; }
 .document-switcher { width: 18px; height: 24px; display: grid; flex: none; place-items: center; padding: 0; background: transparent; color: #ffffff5c; cursor: pointer; }
 .document-switcher .icon { width: 13px; height: 13px; }
 .document-switcher-scrim { position: absolute; z-index: 20; inset: 48px 0 0; background: #00000066; }
+.document-switcher-panel[hidden], .document-switcher-scrim[hidden], .document-switcher-item[hidden], .document-switcher-empty[hidden] { display: none !important; }
+.document-switcher-panel { position: absolute; z-index: 21; top: 50px; left: 96px; width: min(380px, calc(100% - 108px)); display: grid; gap: 2px; padding: 6px; overflow: hidden; border: 1px solid #ffffff24; border-radius: 12px; background: #1c1c1c; box-shadow: 0 16px 40px #000000a6; }
+.document-switcher-search { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid #ffffff12; border-radius: 8px; background: #ffffff08; color: #ffffff5c; }
+.document-switcher-search .icon { width: 14px; height: 14px; flex: none; }
+.document-switcher-search input { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: #fff; font-size: 12.5px; }
+.document-switcher-search input::placeholder { color: #ffffff5c; }
+.document-switcher-heading { height: 28px; display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 0; color: #ffffff5c; font-size: 10.5px; }
+.document-switcher-heading strong { overflow: hidden; font-weight: 700; letter-spacing: .6px; text-overflow: ellipsis; white-space: nowrap; }
+.document-switcher-heading span { flex: none; font-weight: 500; }
+.document-switcher-list { max-height: 304px; overflow-y: auto; }
+.document-switcher-item { width: 100%; height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 7px; background: transparent; color: #fff; text-align: left; cursor: pointer; }
+.document-switcher-item:hover, .document-switcher-item:focus-visible { background: #ffffff0a; outline: 0; }
+.document-switcher-item.current { background: #3b82f626; }
+.document-switcher-module { width: 26px; height: 26px; display: grid; flex: none; place-items: center; border-radius: 6px; background: #ffffff0a; color: #ffffff99; }
+.document-switcher-module .icon { width: 14px; height: 14px; }
+.document-switcher-item.current .document-switcher-module, .document-switcher-item.current > .icon { color: #93c5fd; }
+.document-switcher-copy { min-width: 0; display: grid; flex: 1; gap: 1px; }
+.document-switcher-copy strong, .document-switcher-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-switcher-copy strong { font-size: 12.5px; font-weight: 500; }
+.document-switcher-item.current .document-switcher-copy strong { font-weight: 600; }
+.document-switcher-copy small { color: #ffffff5c; font-size: 11px; font-weight: 500; }
+.document-switcher-item > .icon { width: 14px; height: 14px; flex: none; }
+.document-switcher-empty { padding: 18px 10px; color: #ffffff5c; font-size: 12px; text-align: center; }
+.document-switcher-footer { display: grid; padding-top: 3px; border-top: 1px solid #ffffff12; }
+.document-switcher-footer button { width: 100%; height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 7px; background: transparent; color: #fff; font-size: 12.5px; font-weight: 600; text-align: left; cursor: pointer; }
+.document-switcher-footer button:hover, .document-switcher-footer button:focus-visible { background: #ffffff0a; outline: 0; }
+.document-switcher-footer .icon { width: 15px; height: 15px; flex: none; color: #ffffff99; }
+.document-switcher-footer span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-switcher-footer kbd { color: #ffffff5c; font-family: inherit; font-size: 11.5px; font-weight: 500; }
 .module-badge { flex: none; padding: 2px 7px; border-radius: 5px; background: #ffffff0f; color: #ffffff99; font-size: 10.5px; font-weight: 600; }
 .sync { display: flex; flex: none; align-items: center; gap: 5px; color: #ffffff5c; font-size: 10.5px; white-space: nowrap; }
 .sync .icon { width: 12px; height: 12px; color: #22c55e; }
