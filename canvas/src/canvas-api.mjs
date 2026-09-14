@@ -46,7 +46,7 @@ export function createCanvasApi(runtime = globalThis.penkra) {
       }),
     getDocument: async (id) => {
       const encoded = encodeURIComponent(id);
-      const project = await request(`/${encoded}?chunked=auto`);
+      const project = await request(`/${encoded}?chunked=1`);
       const assets = await request(`/${encoded}/blobs`);
       const snapshot = project.snapshot.chunked
         ? await readChunkedSnapshot(request, encoded, project.snapshot)
@@ -59,7 +59,7 @@ export function createCanvasApi(runtime = globalThis.penkra) {
     },
     getDocumentProjection: async (id) => {
       const encoded = encodeURIComponent(id);
-      const project = await request(`/${encoded}?chunked=auto`);
+      const project = await request(`/${encoded}?chunked=1`);
       if ((project.updates ?? []).length > 0) return null;
       const source = project.snapshot.chunked
         ? decodeJson(await readSnapshotContent(request, encoded, project.snapshot.throughSequence, "projection", project.snapshot.projectionBytes))
