@@ -36,8 +36,13 @@ export function createCanvasApi(runtime = globalThis.penkra) {
       if (options.folderId) params.set("folderId", options.folderId);
       return request(`?${params}`);
     },
-    listTrash: (cursor) =>
-      request(`/trash?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+    listTrashItems: (cursor, options = {}) => {
+      const params = new URLSearchParams({ limit: String(options.limit ?? 50) });
+      if (cursor) params.set("cursor", cursor);
+      if (options.query) params.set("query", options.query);
+      return request(`/trash/items?${params}`);
+    },
+    emptyTrash: () => request("/trash", { method: "DELETE" }),
     createDocument: ({ source, initialUpdate, ...input }) =>
       uploadSnapshot(request, null, {
         ...input,

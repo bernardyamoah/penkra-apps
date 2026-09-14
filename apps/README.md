@@ -42,7 +42,7 @@ instead of reinstalling them on the next launch.
 - `ui-model.mjs` owns pure action, permission, version, escaping, and Markdown behavior.
 - `INSTRUCTIONS.md` supplies general agent-facing help; operation help is generated from the
   manifest declarations.
-- `design/apps.pen` remains authoritative for the App's UI and lifecycle states.
+- `TODO.md` names the current authoritative Canvas document for the App's UI and lifecycle states.
 
 Run the focused framework-neutral checks with:
 

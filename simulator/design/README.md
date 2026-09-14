@@ -1,6 +1,8 @@
 # Simulator design brief
 
-`simulator.pen` is the authoritative UI/UX source for the Simulator App. It follows Penkra’s public `simulator-session` contract and contains no project picker.
+The Canvas document named `Simulator - App` is the authoritative UI/UX design artifact for the
+Simulator App. It follows Penkra’s public `simulator-session` contract and contains no project
+picker.
 
 ## Intent
 

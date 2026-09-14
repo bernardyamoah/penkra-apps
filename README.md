@@ -49,9 +49,9 @@ You can preview files directly in the panel or open them with the appropriate to
 ### Canvas — Collaborative design editor
 
 Canvas is an Account-scoped collaborative editor for cloud-hosted design documents. It supports
-loss-preserving `.pen` import and export, realtime and offline editing, sharing, and typed agent
-operations through Penkra's public App runtime. Its approved Pencil design, runtime source,
-compatibility corpus, collaboration tests, and package build all live under `canvas/`.
+realtime and offline editing, sharing, typed agent operations, and export through Penkra's public
+App runtime. Its product guidance, runtime source, collaboration tests, and package build all live
+under `canvas/`; the Canvas document named `Canvas - App` is its current UI/UX authority.
 
 ### Simulator — Mobile device simulation
 
@@ -90,7 +90,7 @@ Apps are built with vanilla JavaScript — no framework dependency. This keeps t
 | Component | Technology |
 |-----------|-----------|
 | UI | Vanilla HTML/CSS/JS |
-| Design | Pencil (`.pen` files) |
+| Design | Canvas documents named by each App's TODO |
 | Testing | Node.js native test runner |
 | Manifests | `penkra-app.json` |
 
@@ -107,38 +107,41 @@ penkra-apps/
 │   ├── penkra-app.json     # App manifest
 │   ├── INSTRUCTIONS.md     # Agent instructions
 │   ├── ui-model.mjs        # Pure logic (framework-free)
-│   └── design/apps.pen     # Pencil design source
+│   └── design/             # Design guidance
 ├── browser/
 │   ├── app.html, app.js, styles.css, package.json
 │   ├── operations.js
 │   ├── penkra-app.json
 │   ├── browser-model.mjs
-│   └── design/browser.pen
+│   └── design/             # Design guidance
 ├── canvas/
 │   ├── app.html, app.js, styles.css, package.json
 │   ├── operations.js
 │   ├── penkra-app.json
 │   ├── src/                 # Runtime, API, document, and operation models
-│   ├── compatibility/       # Loss-preservation corpus and differential checks
+│   ├── compatibility/       # Stored-document compatibility gates
 │   ├── collaboration/       # Yjs convergence and recovery tests
 │   ├── RESEARCH.md           # Standards and upstream audit
-│   └── design/canvas.pen     # Approved UI/UX authority
+│   └── design/               # Design guidance
 ├── explorer/
 │   ├── app.html, app.js, styles.css, package.json
 │   ├── operations.js
 │   ├── penkra-app.json
 │   ├── explorer-model.mjs
-│   └── design/explorer.pen
+│   └── design/             # Design guidance
 └── simulator/
     ├── app.html, app.js, styles.css
     ├── penkra-app.json
     ├── simulator-model.mjs
-    └── design/simulator.pen
+    └── design/             # Design guidance
 ```
 
 ### Design system
 
-Each App has an authoritative Pencil file in its `design/` directory. Pencil is the source of truth for that App's UI, states, language, and visual composition. Do not build UI that isn't in the corresponding Pencil design.
+Each App's ignored root `TODO.md` names its current authoritative Canvas document. That document is
+the source of truth for the App's UI, states, language, hierarchy, and visual composition. The
+tracked `design/README.md` explains the intended product coverage without creating a second design
+authority.
 
 ### Building your own App
 

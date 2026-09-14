@@ -110,8 +110,12 @@ const state = {
   editorDocuments: [],
   thumbnails: new Map(),
   currentProfile: null,
-  trashedDocuments: [],
-  trashedFolders: [],
+  trashItems: [],
+  trashTotalCount: 0,
+  trashExpiringSoonCount: 0,
+  trashNextCursor: null,
+  trashLoadingMore: false,
+  trashSearchTimer: null,
   trashLoaded: false,
   shellReady: false,
   loading: true,
@@ -452,7 +456,7 @@ function persistCollectionCache() {
 }
 
 function knownDocument(documentId) {
-  return [...state.documents, ...state.folderDocuments, ...state.trashedDocuments]
+  return [...state.documents, ...state.folderDocuments, ...state.trashItems.filter((item) => item.kind === "document")]
     .find((document) => document.id === documentId) ?? null;
 }
 
@@ -568,17 +572,18 @@ async function showTrash() {
   state.fatalError = false;
   state.error = null;
   state.contextMenu = null;
+  state.trashLoaded = false;
+  state.trashItems = [];
+  state.trashNextCursor = null;
   render();
-  const folders = loadEveryFolderPage({ view: "trash" }).then((items) => {
-    if (state.route !== "trash") return;
-    state.trashedFolders = items;
-    render();
-  });
   const documents = documentCollectionLifecycle.start({
-    load: () => loadEveryDocumentPage(api.listTrash),
-    apply: (documents) => {
+    load: () => api.listTrashItems(null, { query: state.search.trim() }),
+    apply: (result) => {
       if (state.route !== "trash") return;
-      state.trashedDocuments = documents;
+      state.trashItems = result.items;
+      state.trashTotalCount = result.totalCount;
+      state.trashExpiringSoonCount = result.expiringSoonCount;
+      state.trashNextCursor = result.pageInfo.nextCursor;
       state.loading = false;
       state.trashLoaded = true;
       state.error = null;
@@ -586,8 +591,28 @@ async function showTrash() {
     },
     onError: handleDocumentCollectionError,
   });
-  void Promise.all([folders, documents]).catch((error) =>
-    handleDocumentCollectionError(error, { phase: "load" }));
+  startFolderSubscription();
+  void documents.catch((error) => handleDocumentCollectionError(error, { phase: "load" }));
+}
+
+async function loadMoreTrash() {
+  if (!state.trashNextCursor || state.trashLoadingMore) return;
+  state.trashLoadingMore = true;
+  render();
+  try {
+    const result = await api.listTrashItems(state.trashNextCursor, { query: state.search.trim() });
+    if (state.route !== "trash") return;
+    const known = new Set(state.trashItems.map((item) => `${item.kind}:${item.id}`));
+    state.trashItems.push(...result.items.filter((item) => !known.has(`${item.kind}:${item.id}`)));
+    state.trashNextCursor = result.pageInfo.nextCursor;
+    state.trashTotalCount = result.totalCount;
+    state.trashExpiringSoonCount = result.expiringSoonCount;
+  } catch (error) {
+    state.error = message(error);
+  } finally {
+    state.trashLoadingMore = false;
+    if (state.route === "trash") render();
+  }
 }
 
 async function loadEveryDocumentPage(loadPage) {
@@ -620,6 +645,8 @@ function startFolderSubscription(folderId = null) {
       void refreshFolderCollection(folderId).catch((error) => handleDocumentCollectionError(error, { phase: "load" }));
     } else if (!folderId && state.route === "library") {
       void refreshLibraryFolders().catch((error) => handleDocumentCollectionError(error, { phase: "load" }));
+    } else if (!folderId && state.route === "trash") {
+      void documentCollectionLifecycle.refresh();
     }
   }).then((unsubscribe) => { state.folderUnsubscribe = unsubscribe; }).catch((error) => {
     console.warn("Canvas folder realtime is unavailable.", error);
@@ -928,6 +955,8 @@ async function loadDocumentThumbnails(documents) {
 }
 
 function closeDocument() {
+  clearTimeout(state.trashSearchTimer);
+  state.trashSearchTimer = null;
   documentCollectionLifecycle.stop();
   state.folderUnsubscribe?.();
   state.folderUnsubscribe = null;
@@ -1390,17 +1419,49 @@ function emptyLibrary(query = "") {
 }
 
 function renderTrash() {
-  const query = state.search.trim().toLowerCase();
-  const documents = state.trashedDocuments.filter((document) =>
-    !query || document.title.toLowerCase().includes(query));
   return `<main class="shell library"><div class="library-inner">
-    ${libraryTopbar("Search Trash")}
-    ${libraryTabs("trash")}
-    <header class="trash-overview"><div class="library-title"><h1>Trash</h1><p>Items are permanently deleted after 30 days.</p></div></header>
-    ${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
-    ${state.trashedFolders.length ? `<section class="library-section"><div class="section-heading"><h2>Folders</h2></div><div class="folder-grid">${state.trashedFolders.map(trashFolderCard).join("")}</div></section>` : ""}
-    ${documents.length ? `<section class="library-section"><div class="section-heading"><h2>Designs</h2></div><div class="document-grid">${documents.map(trashCard).join("")}</div></section>` : state.trashedFolders.length || !state.trashLoaded ? "" : `<section class="empty"><div>${icon("trash")}<h2>Trash is empty</h2><p>Items moved to Trash will appear here for 30 days.</p></div></section>`}
+    <div class="library-sticky">${libraryTopbar("Search Trash")}${libraryTabs("trash")}</div>
+    <div class="trash-content">
+      <header class="trash-overview"><div class="library-title"><h1>Trash</h1><p>Restore something you still need, or remove it for good.</p></div></header>
+      <section class="trash-banner">
+        <span class="trash-banner-icon">${icon("info")}</span>
+        <p>Designs and folders stay in Trash for 30 days, then they’re deleted for good. Folders restore with everything inside. Previous parents are restored when available; otherwise the item returns to Home.</p>
+        <button class="button danger" data-action="empty-trash" ${state.trashTotalCount ? "" : "disabled"}>${icon("trash")}Empty trash</button>
+      </section>
+      ${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
+      ${state.trashItems.length ? renderTrashTable() : state.trashLoaded ? `<section class="empty trash-empty"><div>${icon("trash")}<h2>${state.search.trim() ? "No results in Trash" : "Trash is empty"}</h2><p>${state.search.trim() ? "Try another name or location." : "Items moved to Trash will stay here for 30 days."}</p></div></section>` : `<section class="trash-loading" aria-label="Loading Trash"></section>`}
+    </div>
   </div></main>${renderDialog()}${renderToast()}`;
+}
+
+function renderTrashTable() {
+  const footer = `${state.trashTotalCount} item${state.trashTotalCount === 1 ? "" : "s"}${state.trashExpiringSoonCount ? ` · ${state.trashExpiringSoonCount} expiring soon` : ""}`;
+  return `<section class="trash-table" aria-label="Deleted designs and folders">
+    <div class="trash-table-head" role="row"><span>NAME</span><span>WAS IN</span><span>DELETED</span><span>BY</span><span aria-hidden="true"></span></div>
+    <div class="trash-table-body">${state.trashItems.map(trashRow).join("")}</div>
+    <footer class="trash-table-footer"><span>${escapeHtml(footer)}</span><span class="trash-agent-hint">${icon("sparkles")}Ask the Agent: “restore everything Bernard deleted yesterday”</span>${state.trashNextCursor ? `<button class="button" data-action="load-more-trash" ${state.trashLoadingMore ? "disabled" : ""}>${state.trashLoadingMore ? "Loading…" : "Load more"}</button>` : ""}</footer>
+  </section>`;
+}
+
+function trashRow(item) {
+  const document = item.kind === "document";
+  const detail = document
+    ? `${moduleLabel(item.module)} · ${item.unitCount} ${trashUnitLabel(item.module, item.unitCount)}`
+    : `Folder · ${item.designCount} design${item.designCount === 1 ? "" : "s"} inside — restore brings ${item.designCount === 1 ? "it" : "them"} all back`;
+  const actor = item.deletedBy;
+  const actorLabel = actor ? (actor.isCurrentUser ? "You" : actor.name?.trim() || "Unknown") : "Unknown";
+  return `<article class="trash-table-row" data-trash-kind="${item.kind}">
+    <span class="trash-name-cell"><i class="trash-item-icon ${item.kind}">${icon(document ? "deck" : "folder")}</i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span></span>
+    <span class="trash-path-cell" title="${escapeHtml(item.previousPath)}">${escapeHtml(item.previousPath)}</span>
+    <span class="trash-deleted-cell"><strong>${escapeHtml(relativeTime(item.deletedAt))}</strong><small>Gone in ${daysUntil(item.recoverableUntil)} day${daysUntil(item.recoverableUntil) === 1 ? "" : "s"}</small></span>
+    <span class="trash-actor-cell">${actor ? avatar(actor) : `<span class="avatar avatar-fallback" aria-hidden="true">?</span>`}<span>${escapeHtml(actorLabel)}</span></span>
+    <span class="trash-row-actions"><button class="button" data-${document ? "restore-document" : "restore-folder"}="${item.id}">Restore${document ? "" : " folder"}</button><button class="icon-button trash-delete" data-${document ? "permanently-delete-document" : "delete-folder"}="${item.id}" aria-label="Permanently delete ${escapeHtml(item.title)}" title="Delete permanently">${icon("trash")}</button></span>
+  </article>`;
+}
+
+function trashUnitLabel(module, count) {
+  const singular = ({ deck: "slide", web: "route", mobile: "screen" })[module] ?? "item";
+  return `${singular}${count === 1 ? "" : "s"}`;
 }
 
 function segment(key, label) {
@@ -1459,14 +1520,6 @@ function avatar(profile) {
 
 function initials(value) {
   return value.split(/\s+/u).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
-}
-
-function trashCard(document) {
-  return `<article class="document-card trash-card"><span class="document-preview">${icon("file")}</span><span class="document-meta"><strong>${escapeHtml(document.title)}</strong><span>Deleted ${escapeHtml(formatDate(document.deletedAt))}</span><span>Permanently deletes ${escapeHtml(formatDate(document.recoverableUntil))}</span></span><span class="trash-actions"><button class="button" data-restore-document="${document.id}">Restore</button><button class="button danger" data-permanently-delete-document="${document.id}">Delete permanently</button></span></article>`;
-}
-
-function trashFolderCard(folder) {
-  return `<article class="folder-card trash-folder-card"><span class="folder-icon">${icon("folder")}</span><span><strong>${escapeHtml(folder.name)}</strong><small>${folder.designCount} designs</small></span><span class="trash-actions"><button class="button" data-restore-folder="${folder.id}">Restore</button><button class="button danger" data-delete-folder="${folder.id}">Delete permanently</button></span></article>`;
 }
 
 function renderContextMenu() {
@@ -2018,6 +2071,10 @@ function bindLibrary() {
     const search = root.querySelector('[data-role="search"]');
     search?.focus();
     search?.setSelectionRange(state.search.length, state.search.length);
+    if (state.route === "trash") {
+      clearTimeout(state.trashSearchTimer);
+      state.trashSearchTimer = setTimeout(() => void documentCollectionLifecycle.refresh(), 200);
+    }
   });
   root.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => {
     void activateLibraryTab(state.route, button.dataset.filter, {
@@ -2050,29 +2107,26 @@ function bindLibrary() {
     });
   });
   root.querySelectorAll("[data-restore-document]").forEach((button) => button.addEventListener("click", () => void act(async () => {
-    const document = state.trashedDocuments.find((item) => item.id === button.dataset.restoreDocument);
-    const restored = await api.restoreDocument(button.dataset.restoreDocument);
-    state.trashedDocuments = state.trashedDocuments.filter((item) => item.id !== button.dataset.restoreDocument);
-    upsertDocumentSummary({ ...(document ?? {}), ...restored, deletedAt: null });
+    await api.restoreDocument(button.dataset.restoreDocument);
+    await documentCollectionLifecycle.refresh();
     setToast("Document restored.");
     render();
   })));
   root.querySelectorAll("[data-restore-folder]").forEach((button) => button.addEventListener("click", () => void act(async () => {
-    const folder = state.trashedFolders.find((item) => item.id === button.dataset.restoreFolder);
-    const restored = await api.restoreFolder(button.dataset.restoreFolder);
-    state.trashedFolders = state.trashedFolders.filter((item) => item.id !== button.dataset.restoreFolder);
-    upsertFolderSummary({ ...(folder ?? {}), ...restored, deletedAt: null });
+    await api.restoreFolder(button.dataset.restoreFolder);
+    await documentCollectionLifecycle.refresh();
+    setToast("Folder restored.");
     render();
   })));
   root.querySelectorAll("[data-delete-folder]").forEach((button) => button.addEventListener("click", () => {
-    const folder = state.trashedFolders.find((item) => item.id === button.dataset.deleteFolder);
+    const folder = state.trashItems.find((item) => item.kind === "folder" && item.id === button.dataset.deleteFolder);
     if (!folder) return;
-    state.dialog = { kind: "confirm-permanently-delete-folder", folderId: folder.id, name: folder.name };
+    state.dialog = { kind: "confirm-permanently-delete-folder", folderId: folder.id, name: folder.title };
     state.dialogFocusSelector = '[data-action="cancel-folder-delete"]';
     render();
   }));
   root.querySelectorAll("[data-permanently-delete-document]").forEach((button) => button.addEventListener("click", () => {
-    const document = state.trashedDocuments.find((item) => item.id === button.dataset.permanentlyDeleteDocument);
+    const document = state.trashItems.find((item) => item.kind === "document" && item.id === button.dataset.permanentlyDeleteDocument);
     if (!document) return;
     state.dialog = documentPermanentDeleteConfirmation(document);
     state.dialogFocusSelector = '[data-action="cancel-confirmation"]';
@@ -2081,6 +2135,12 @@ function bindLibrary() {
   root.querySelector('[data-action="cancel-confirmation"]')?.addEventListener("click", cancelDestructiveConfirmation);
   root.querySelector('[data-action="confirm-trash-document"]')?.addEventListener("click", () => void confirmDestructiveAction());
   root.querySelector('[data-action="confirm-permanently-delete-document"]')?.addEventListener("click", () => void confirmDestructiveAction());
+  root.querySelector('[data-action="load-more-trash"]')?.addEventListener("click", () => void loadMoreTrash());
+  root.querySelector('[data-action="empty-trash"]')?.addEventListener("click", () => {
+    state.dialog = { kind: "confirm-empty-trash" };
+    state.dialogFocusSelector = '[data-action="cancel-empty-trash"]';
+    render();
+  });
   bindFolderDialogs();
 }
 
@@ -2817,6 +2877,13 @@ function renderDialog() {
       `<button class="button" data-action="cancel-folder-delete">Cancel</button><button class="button danger" data-action="confirm-folder-delete">Delete permanently</button>`,
     );
   }
+  if (state.dialog.kind === "confirm-empty-trash") {
+    return dialog(
+      "Empty Trash?",
+      `<p>This permanently deletes ${state.trashTotalCount} item${state.trashTotalCount === 1 ? "" : "s"}. This cannot be undone.</p>`,
+      `<button class="button" data-action="cancel-empty-trash" autofocus>Cancel</button><button class="button danger" data-action="confirm-empty-trash">Empty trash</button>`,
+    );
+  }
   if (state.dialog === "menu") {
     return dialog("Document actions", `<div class="grant-list">${state.document?.access === "owner" ? `<button class="button danger" data-action="trash-document">Move to Trash</button>` : ""}</div>`);
   }
@@ -2891,7 +2958,16 @@ function bindFolderDialogs() {
     const folderId = state.dialog.folderId;
     state.dialog = null;
     await api.permanentlyDeleteFolder(folderId);
-    state.trashedFolders = state.trashedFolders.filter((item) => item.id !== folderId);
+    await documentCollectionLifecycle.refresh();
+    render();
+  }));
+  root.querySelector('[data-action="cancel-empty-trash"]')?.addEventListener("click", closeDialog);
+  root.querySelector('[data-action="confirm-empty-trash"]')?.addEventListener("click", () => void act(async () => {
+    state.dialog = null;
+    render();
+    const result = await api.emptyTrash();
+    await documentCollectionLifecycle.refresh();
+    setToast(`Permanently deleted ${result.documentCount + result.folderCount} item${result.documentCount + result.folderCount === 1 ? "" : "s"}.`);
     render();
   }));
   root.querySelector('[data-action="grant"]')?.addEventListener("click", () => void act(async () => {
@@ -2963,7 +3039,7 @@ async function confirmDestructiveAction() {
     }
     if (result === "permanently-deleted-document") {
       state.dialog = null;
-      state.trashedDocuments = state.trashedDocuments.filter((item) => item.id !== confirmation.documentId);
+      await documentCollectionLifecycle.refresh();
       setToast("Document permanently deleted.");
       render();
       return;
@@ -3052,14 +3128,9 @@ function relativeTime(value) {
   return new Date(value).toLocaleDateString();
 }
 
-function formatDate(value) {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return "Unknown";
-  return new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  }).format(date);
+function daysUntil(value) {
+  const remaining = new Date(value).getTime() - Date.now();
+  return Math.max(0, Math.ceil(remaining / 86_400_000));
 }
 
 function message(error) {
@@ -3080,6 +3151,8 @@ function icon(name) {
     ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>',
     file: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/>',
     trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    sparkles: '<path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2zM5 15l.8 2.2L8 18l-2.2.8L5 21l-.8-2.2L2 18l2.2-.8zM19 14l.7 1.8 1.8.7-1.8.7L19 19l-.7-1.8-1.8-.7 1.8-.7z"/>',
     frame: '<path d="M5 5h14v14H5z"/><path d="M3 8h4M17 8h4M8 3v4M8 17v4"/>',
     folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
     "folder-plus": '<path d="M3 7h7l2 2h9v10H3z"/><path d="M12 12v5M9.5 14.5h5"/>',
