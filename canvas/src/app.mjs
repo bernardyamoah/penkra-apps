@@ -7,6 +7,7 @@ import { hasUnloadedDocumentImages, hydrateDocumentAssets } from "./document-ass
 import { IndexeddbPersistence } from "y-indexeddb";
 import { createRouteCoordinator } from "./route-coordinator.mjs";
 import { activateLibraryTab } from "./library-navigation.mjs";
+import { trashSummary } from "./trash-summary.mjs";
 import { createVisibleDocumentRestore } from "./visible-document-restore.mjs";
 import {
   analyzeOpenPencilCompatibility,
@@ -1438,10 +1439,15 @@ function renderTrash() {
 }
 
 function renderTrashTable() {
-  const visibleCount = state.trashMatchingCount;
+  const summary = trashSummary({
+    query: state.search,
+    matchingCount: state.trashMatchingCount,
+    totalCount: state.trashTotalCount,
+  });
+  const visibleCount = summary.matchingCount;
   const visibleLabel = `${visibleCount} item${visibleCount === 1 ? "" : "s"}`;
-  const totalLabel = `${state.trashTotalCount} item${state.trashTotalCount === 1 ? "" : "s"} total`;
-  const footer = `${state.trashQuery ? `${visibleLabel} · ${totalLabel}` : visibleLabel}${state.trashExpiringSoonCount ? ` · ${state.trashExpiringSoonCount} expiring soon` : ""}`;
+  const totalLabel = `${summary.totalCount} item${summary.totalCount === 1 ? "" : "s"} total`;
+  const footer = `${summary.isFiltered ? `${visibleLabel} · ${totalLabel}` : visibleLabel}${state.trashExpiringSoonCount ? ` · ${state.trashExpiringSoonCount} expiring soon` : ""}`;
   return `<section class="trash-table" aria-label="Deleted designs and folders">
     <div class="trash-table-head" role="row"><span>NAME</span><span>WAS IN</span><span>DELETED</span><span>BY</span><span aria-hidden="true"></span></div>
     <div class="trash-table-body">${state.trashItems.map(trashRow).join("")}</div>
