@@ -177,6 +177,7 @@ const state = {
 const routes = createRouteCoordinator({
   isDocumentOpen: (documentId) => state.document?.id === documentId,
   openDocument,
+  onRouteError: (error) => console.warn("Canvas could not persist its current route.", error),
   setRoute: (input) => runtime.tab.setRoute(input),
   showDocumentUnavailable,
   showFolder,
