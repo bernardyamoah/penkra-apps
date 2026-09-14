@@ -63,6 +63,7 @@ test("registers only the public document lifecycle, editing, undo, and sharing s
     "documents.move",
     "documents.open",
     "documents.rename",
+    "documents.restore",
     "documents.trash",
     "documents.undo",
     "folders.create",
