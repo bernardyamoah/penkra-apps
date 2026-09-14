@@ -1379,7 +1379,11 @@ function folderCard(folder, nested = false) {
   const people = folderPeople(folder, { inheritCurrentFolder: nested });
   const peopleCount = folderPeopleProfiles(folder, { inheritCurrentFolder: nested }).length;
   const detail = `${folder.designCount} design${folder.designCount === 1 ? "" : "s"}${nested && peopleCount ? ` · inherits ${peopleCount} ${peopleCount === 1 ? "person" : "people"}` : peopleCount ? ` · ${peopleCount} ${peopleCount === 1 ? "person" : "people"}` : ""}`;
-  return `<button class="folder-card ${nested ? "nested-folder-card" : ""}" data-folder-id="${folder.id}">${nested ? `<span class="folder-icon">${icon("folder")}</span>` : ""}<span><strong>${escapeHtml(folder.name)}</strong><small>${escapeHtml(detail)}</small>${nested ? "" : people}</span></button>`;
+  const elapsed = relativeTime(folder.lastOpenedAt ?? folder.updatedAt);
+  const content = nested
+    ? `<span><strong>${escapeHtml(folder.name)}</strong><small>${escapeHtml(detail)}</small></span>`
+    : `<span class="folder-card-content"><span class="folder-card-copy"><strong>${escapeHtml(folder.name)}</strong><small>${escapeHtml(detail)}</small></span><span class="folder-card-footer"><small>${escapeHtml(elapsed)}</small>${people}</span></span>`;
+  return `<button class="folder-card ${nested ? "nested-folder-card" : ""}" data-folder-id="${folder.id}">${nested ? `<span class="folder-icon">${icon("folder")}</span>` : ""}${content}</button>`;
 }
 
 function folderPeopleProfiles(folder, { inheritCurrentFolder = false } = {}) {

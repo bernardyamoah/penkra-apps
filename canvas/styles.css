@@ -87,7 +87,10 @@ h1, h2, h3, p { margin: 0; }
 .folder-rail { display: grid; grid-auto-flow: column; grid-auto-columns: 252px; grid-template-rows: 100px; gap: 20px; overflow-x: auto; overscroll-behavior-inline: contain; padding-bottom: 3px; scrollbar-width: thin; }
 .folder-card { min-width: 0; width: 252px; aspect-ratio: 252 / 100; display: flex; align-items: stretch; gap: 12px; padding: 12px; border: 1px solid #2b2d32; border-radius: 12px; background: #191a1e; color: #eef0f3; text-align: left; cursor: pointer; }
 .folder-card:hover { border-color: #484c54; background: #1e2024; }
-.folder-card:not(.nested-folder-card) > span:first-child { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 3px; }
+.folder-card:not(.nested-folder-card) > .folder-card-content { min-width: 0; display: flex; flex: 1; flex-direction: column; justify-content: space-between; }
+.folder-card-copy { min-width: 0; display: grid; gap: 3px; }
+.folder-card-footer { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.folder-card-footer > small { flex: none; }
 .folder-card strong, .folder-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-card strong { font-size: 13.5px; font-weight: 620; }
 .folder-card small { color: #767b84; font-size: 11.5px; }
