@@ -2,6 +2,12 @@ export async function hydrateDocumentAssets(api, documentId, descriptors = [], c
   const assets = current;
   const rasterizeSvg = dependencies.rasterizeSvg;
   let changed = false;
+  const retainedPaths = new Set(descriptors.map((descriptor) => descriptor.path));
+  for (const path of assets.keys()) {
+    if (retainedPaths.has(path)) continue;
+    assets.delete(path);
+    changed = true;
+  }
   await Promise.all(descriptors.map(async (descriptor) => {
     const existing = assets.get(descriptor.path);
     if (

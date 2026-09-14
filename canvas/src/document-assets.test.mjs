@@ -18,6 +18,12 @@ test("hydrates new or changed assets into the live document asset map", async ()
       size: 1,
       bytes: new Uint8Array([1]),
     }],
+    ["images/removed.png", {
+      path: "images/removed.png",
+      sha256: "c".repeat(64),
+      size: 1,
+      bytes: new Uint8Array([1]),
+    }],
   ]);
 
   const result = await hydrateDocumentAssets(api, "document-id", [
@@ -29,6 +35,7 @@ test("hydrates new or changed assets into the live document asset map", async ()
   assert.equal(result.changed, true);
   assert.equal(result.assets, current);
   assert.equal(result.assets.size, 2);
+  assert.equal(result.assets.has("images/removed.png"), false);
   assert.deepEqual(current.get("images/new.png").bytes, new Uint8Array([14]));
 });
 

@@ -2,6 +2,7 @@ import { createCanvasApi } from "./canvas-api.mjs";
 import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
 import { createBlankDocumentSource } from "./blank-document.mjs";
 import { createDocumentCollectionLifecycle } from "./document-collection-lifecycle.mjs";
+import { createDocumentAssetCache } from "./document-asset-cache.mjs";
 import { hasUnloadedDocumentImages, hydrateDocumentAssets } from "./document-assets.mjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { createRouteCoordinator } from "./route-coordinator.mjs";
@@ -85,6 +86,7 @@ const documentCollectionLifecycle = createDocumentCollectionLifecycle({
   subscribe: (listener) => api.subscribeToDocuments(listener),
 });
 const performanceMonitor = createPerformanceMonitor();
+const documentAssetCache = createDocumentAssetCache(2);
 configureCanvasFonts(runtime, { performanceMonitor });
 const state = {
   route: "library",
@@ -689,9 +691,11 @@ async function openDocument(documentId) {
       ),
     ]);
     const assetDescriptors = payload.assets ?? [];
-    const { assets } = await performanceMonitor.measureAsync(
+    const cachedAssets = documentAssetCache.take(documentId);
+    state.assets = cachedAssets;
+    const assetHydration = performanceMonitor.measureAsync(
       "document.assets",
-      () => hydrateDocumentAssets(api, documentId, assetDescriptors, new Map(), {
+      () => hydrateDocumentAssets(api, documentId, assetDescriptors, cachedAssets, {
         rasterizeSvg: rasterizeOpenPencilSvgAsset,
       }),
       {
@@ -710,7 +714,6 @@ async function openDocument(documentId) {
     state.currentFolder = payload.folderId ? knownFolder(payload.folderId) : null;
     state.editorDocuments = [];
     state.grants = [];
-    state.assets = new Map(assets);
     state.accessRemoved = false;
     state.model = performanceMonitor.measure(
       "document.restore-model",
@@ -823,6 +826,20 @@ async function openDocument(documentId) {
     state.loading = false;
     setSync("saved", "Saved");
     render();
+    void assetHydration.then(({ assets, changed }) => {
+      documentAssetCache.remember(documentId, assets);
+      if (state.document?.id !== documentId || !changed) return;
+      state.assets = assets;
+      invalidateDocumentProjection();
+      state.compatibilityDocument = null;
+      state.engineDocumentDirty = true;
+      state.engineDocumentDirtyReason = "document-assets-loaded";
+      render();
+    }).catch((error) => {
+      if (state.document?.id === documentId) {
+        console.warn("Canvas could not load every document asset.", error);
+      }
+    });
     void persistenceSync.then(() => {
       if (state.document?.id !== documentId) return;
       const offlineUpdate = performanceMonitor.measure(
