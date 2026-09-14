@@ -1,6 +1,7 @@
 export function createRouteCoordinator({
   isDocumentOpen,
   openDocument,
+  restoreDocument = openDocument,
   onRouteError = () => undefined,
   setRoute,
   showDocumentUnavailable,
@@ -33,7 +34,7 @@ export function createRouteCoordinator({
     hostNavigationRequested = true;
     return enqueue(() => {
       if (input.route === "/document" && input.state?.documentId) {
-        return openDocument(input.state.documentId);
+        return restoreDocument(input.state.documentId);
       }
       if (input.route === "/document-unavailable" && input.state?.documentId) {
         return showDocumentUnavailable(input.state);

@@ -5,6 +5,7 @@ import { createDocumentCollectionLifecycle } from "./document-collection-lifecyc
 import { hasUnloadedDocumentImages, hydrateDocumentAssets } from "./document-assets.mjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { createRouteCoordinator } from "./route-coordinator.mjs";
+import { createVisibleDocumentRestore } from "./visible-document-restore.mjs";
 import {
   analyzeOpenPencilCompatibility,
   isOpenPencilEditableNode,
@@ -157,7 +158,7 @@ const state = {
   engineMountGeneration: 0,
   engineViewport: null,
   engineReady: false,
-  appTabActive: true,
+  appTabActive: false,
   engineDocumentDirty: false,
   engineDocumentDirtyReason: null,
   compatibilityIssues: [],
@@ -174,9 +175,23 @@ const state = {
   documentOpenStartedAt: null,
 };
 
+const visibleDocumentRestore = createVisibleDocumentRestore({
+  openDocument,
+  onQueued: () => {
+    closeDocument();
+    state.route = "editor";
+    state.loading = true;
+    state.fatalError = false;
+    state.error = null;
+    render();
+  },
+  onError: (error) => console.warn("Canvas could not restore its document route.", error),
+});
+
 const routes = createRouteCoordinator({
   isDocumentOpen: (documentId) => state.document?.id === documentId,
   openDocument,
+  restoreDocument: (documentId) => visibleDocumentRestore.restore(documentId),
   onRouteError: (error) => console.warn("Canvas could not persist its current route.", error),
   setRoute: (input) => runtime.tab.setRoute(input),
   showDocumentUnavailable,
@@ -188,6 +203,7 @@ const routes = createRouteCoordinator({
 runtime.tab.onNavigate((input) => routes.handleHostNavigation(input));
 const releaseTabVisibility = runtime.tab.onVisibilityChange(({ active }) => {
   state.appTabActive = active;
+  visibleDocumentRestore.setActive(active);
   state.engineSurface?.setVisible(active);
 });
 window.addEventListener("online", () => {
@@ -243,6 +259,7 @@ async function bootstrap() {
 }
 
 async function showLibrary() {
+  visibleDocumentRestore.cancel();
   closeDocument();
   state.currentFolder = null;
   state.activeFolderId = null;
@@ -275,6 +292,7 @@ async function showLibrary() {
 }
 
 async function showFolder(folderId) {
+  visibleDocumentRestore.cancel();
   closeDocument();
   state.route = "folder";
   state.activeFolderId = folderId;
@@ -538,6 +556,7 @@ function invalidateFolderTree() {
 }
 
 async function showTrash() {
+  visibleDocumentRestore.cancel();
   closeDocument();
   state.currentFolder = null;
   state.activeFolderId = null;
@@ -605,6 +624,7 @@ function startFolderSubscription(folderId = null) {
 }
 
 async function showDocumentUnavailable(input) {
+  visibleDocumentRestore.cancel();
   closeDocument();
   state.route = "document-unavailable";
   state.documentUnavailable = {
