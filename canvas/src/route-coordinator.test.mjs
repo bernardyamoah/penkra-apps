@@ -55,6 +55,32 @@ test("restored document wins when host navigation arrives before bootstrap", asy
   assert.deepEqual(current.calls, ["document:doc-1"]);
 });
 
+test("host document restoration can hand control back before hydration", async () => {
+  const calls = [];
+  const hydration = deferred();
+  const router = createRouteCoordinator({
+    isDocumentOpen: () => false,
+    openDocument: async () => assert.fail("App navigation should not handle host restoration."),
+    restoreDocument: (documentId) => {
+      calls.push(`queued:${documentId}`);
+      void hydration.promise.then(() => calls.push(`opened:${documentId}`));
+    },
+    setRoute: async () => undefined,
+    showDocumentUnavailable: async () => undefined,
+    showLibrary: async () => calls.push("library"),
+    showTrash: async () => undefined,
+    showFolder: async () => undefined,
+  });
+
+  await router.handleHostNavigation({ route: "/document", state: { documentId: "doc-1" } });
+  assert.deepEqual(calls, ["queued:doc-1"]);
+
+  hydration.resolve();
+  await hydration.promise;
+  await Promise.resolve();
+  assert.deepEqual(calls, ["queued:doc-1", "opened:doc-1"]);
+});
+
 test("restored document waits for an in-flight bootstrap and still wins", async () => {
   const current = fixture({ blockLibrary: true });
   const bootstrap = current.router.showDefaultLibrary();
