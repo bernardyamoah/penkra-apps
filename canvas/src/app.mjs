@@ -1323,7 +1323,10 @@ function libraryTopbar(placeholder) {
 }
 
 function folderTopbar(folder) {
-  return `<header class="library-topbar folder-topbar"><div class="folder-breadcrumb"><button data-action="folder-back">${icon("home")}Home</button><span>${icon("chevron")}</span><strong>${icon("folder")}${escapeHtml(folder.name)}</strong></div><div class="topbar-actions">${searchControl("Search designs and folders", `Search ${folder.name}`)}<button class="button primary" data-action="new">${icon("plus")}New design</button></div></header>`;
+  const parent = folder.parentId && folder.parentName
+    ? `<button data-action="folder-back">${icon("folder")}${escapeHtml(folder.parentName)}</button><span>${icon("chevron")}</span>`
+    : "";
+  return `<header class="library-topbar folder-topbar"><div class="folder-breadcrumb"><button data-action="folder-home">${icon("home")}Home</button><span>${icon("chevron")}</span>${parent}<strong>${icon("folder")}${escapeHtml(folder.name)}</strong></div><div class="topbar-actions">${searchControl("Search designs and folders", `Search ${folder.name}`)}<button class="button primary" data-action="new">${icon("plus")}New design</button></div></header>`;
 }
 
 function searchControl(placeholder, label = placeholder) {
@@ -1432,6 +1435,23 @@ function renderContextMenu() {
   return `<div class="context-menu-backdrop" data-role="context-menu-layer" data-action="close-context-menu"><div class="context-menu" role="menu" aria-label="${escapeHtml(document.title)} actions" style="left:${menu.x}px;top:${menu.y}px"><button role="menuitem" data-trash-document="${document.id}">${icon("trash")}<span>Move to Trash</span></button></div></div>`;
 }
 
+function renderDocumentSwitcher() {
+  const folderName = state.currentFolder?.name ?? "Canvas";
+  const documents = state.editorDocuments;
+  const rows = documents.length
+    ? documents.map((document) => {
+      const current = document.id === state.document.id;
+      const editor = document.lastEditor?.isCurrentUser ? "you" : document.lastEditor?.name?.trim();
+      const detail = current
+        ? `Editing now · ${moduleLabel(document.module)}`
+        : `Edited ${relativeTime(document.updatedAt)}${editor ? ` · ${editor}` : ""}`;
+      return `<button class="document-switcher-item ${current ? "current" : ""}" data-switch-document="${document.id}" data-switch-title="${escapeHtml(document.title.toLowerCase())}"><span class="document-switcher-module">${icon(document.module ?? "generic")}</span><span class="document-switcher-copy"><strong>${escapeHtml(document.title)}</strong><small>${escapeHtml(detail)}</small></span>${current ? icon("check") : ""}</button>`;
+    }).join("")
+    : "";
+  const hidden = state.documentSwitcherOpen ? "" : " hidden";
+  return `<div class="document-switcher-scrim" data-action="close-document-switcher" aria-hidden="true"${hidden}></div><section class="document-switcher-panel" role="dialog" aria-label="Switch design"${hidden}><label class="document-switcher-search">${icon("search")}<input data-role="document-switcher-search" type="search" placeholder="Switch to another design in ${escapeHtml(folderName)}…" aria-label="Search designs in ${escapeHtml(folderName)}" /></label><div class="document-switcher-heading"><strong>IN ${escapeHtml(folderName.toUpperCase())} · ${state.editorDocuments.length}</strong><span>Recent first</span></div><div class="document-switcher-list">${rows}<p class="document-switcher-empty" ${documents.length ? "hidden" : ""}>No designs found</p></div><div class="document-switcher-footer"><button data-action="switcher-new-design">${icon("plus")}<span>New design in ${escapeHtml(folderName)}</span><kbd>⌘N</kbd></button><button data-action="switcher-open-folder">${icon("folder")}<span>Open ${escapeHtml(folderName)} folder</span>${icon("chevron")}</button></div></section>`;
+}
+
 function renderEditor() {
   if (state.accessRemoved) {
     return `<main class="shell empty"><div>${icon("file")}<h2>${ACCESS_REMOVED_HEADING}</h2><p>${ACCESS_REMOVED_MESSAGE}</p><div class="library-actions"><button class="button primary" data-action="back">Back to files</button></div></div></main>${renderToast()}`;
@@ -1488,7 +1508,7 @@ function renderEditor() {
       </section>
       <aside class="side-panel inspector" ${state.inspectorOpen ? "" : "hidden"}><div class="panel-tabs"><button class="${state.inspectorTab === "design" ? "active" : ""}" data-inspector-tab="design">Design</button><button class="${state.inspectorTab === "prototype" ? "active" : ""}" data-inspector-tab="prototype">Prototype</button><button class="${state.inspectorTab === "review" ? "active" : ""}" data-inspector-tab="review">Review</button></div><div class="panel-scroll">${renderInspectorPanel(selection)}</div></aside>
     </div>
-    ${state.documentSwitcherOpen ? '<div class="document-switcher-scrim" aria-hidden="true"></div>' : ""}
+    ${renderDocumentSwitcher()}
   </main>${renderDialog()}${renderToast()}`;
 }
 
@@ -1922,6 +1942,7 @@ function bindCommon() {
 function bindLibrary() {
   root.querySelector('[data-action="open-trash"]')?.addEventListener("click", () => void navigateToTrash());
   root.querySelector('[data-action="back-to-files"]')?.addEventListener("click", () => void navigateToLibrary());
+  root.querySelector('[data-action="folder-home"]')?.addEventListener("click", () => void navigateToLibrary());
   root.querySelector('[data-action="folder-back"]')?.addEventListener("click", () => {
     const parentId = state.currentFolder?.parentId;
     void (parentId ? navigateToFolder(parentId) : navigateToLibrary());
@@ -2189,24 +2210,46 @@ function bindEditor() {
   bindLayersTree();
   bindInspectorControls();
   root.querySelector('[data-action="share"]')?.addEventListener("click", () => void openShare({ type: "document", id: state.document.id, name: state.document.title }));
-  root.querySelector('[data-action="document-switcher"]')?.addEventListener("click", () => void (async () => {
-    const items = state.editorDocuments.map((document) => ({
-      id: `open:${document.id}`,
-      label: document.title,
-      checked: document.id === state.document.id,
-    }));
-    state.documentSwitcherOpen = true;
-    render();
-    try {
-      const action = await runtime.contextMenu.show(items);
-      if (action?.startsWith("open:") && action.slice(5) !== state.document.id) await navigateToDocument(action.slice(5));
-    } finally {
-      if (state.route === "editor") {
-        state.documentSwitcherOpen = false;
-        render();
-      }
+  root.querySelector('[data-action="document-switcher"]')?.addEventListener("click", () => {
+    state.documentSwitcherOpen = !state.documentSwitcherOpen;
+    root.querySelector(".document-switcher-panel").hidden = !state.documentSwitcherOpen;
+    root.querySelector(".document-switcher-scrim").hidden = !state.documentSwitcherOpen;
+    if (state.documentSwitcherOpen) root.querySelector('[data-role="document-switcher-search"]')?.focus();
+  });
+  root.querySelector('[data-action="close-document-switcher"]')?.addEventListener("click", () => {
+    state.documentSwitcherOpen = false;
+    root.querySelector(".document-switcher-panel").hidden = true;
+    root.querySelector(".document-switcher-scrim").hidden = true;
+  });
+  root.querySelector('[data-role="document-switcher-search"]')?.addEventListener("input", (event) => {
+    const query = event.target.value.trim().toLowerCase();
+    let visible = 0;
+    root.querySelectorAll("[data-switch-document]").forEach((button) => {
+      button.hidden = Boolean(query) && !button.dataset.switchTitle.includes(query);
+      if (!button.hidden) visible += 1;
+    });
+    root.querySelector(".document-switcher-empty").hidden = visible !== 0;
+  });
+  root.querySelectorAll("[data-switch-document]").forEach((button) => button.addEventListener("click", () => {
+    const documentId = button.dataset.switchDocument;
+    state.documentSwitcherOpen = false;
+    if (!documentId || documentId === state.document.id) {
+      root.querySelector(".document-switcher-panel").hidden = true;
+      root.querySelector(".document-switcher-scrim").hidden = true;
+      return;
     }
-  })());
+    void navigateToDocument(documentId);
+  }));
+  root.querySelector('[data-action="switcher-new-design"]')?.addEventListener("click", () => {
+    state.documentSwitcherOpen = false;
+    state.dialog = { kind: "new-design" };
+    state.dialogFocusSelector = '[data-role="design-name"]';
+    render();
+  });
+  root.querySelector('[data-action="switcher-open-folder"]')?.addEventListener("click", () => {
+    state.documentSwitcherOpen = false;
+    void (state.document.folderId ? navigateToFolder(state.document.folderId) : navigateToLibrary());
+  });
   root.querySelector('[data-action="compatibility"]')?.addEventListener("click", () => openDialog("compatibility", '[data-action="compatibility"]'));
   root.querySelector('[data-action="menu"]')?.addEventListener("click", () => void openDocumentContextMenu({ ...state.document, folderId: state.document.folderId ?? null }));
   root.querySelector('[data-action="trash-document"]')?.addEventListener("click", () => {
@@ -2511,6 +2554,14 @@ function handleKeyboardShortcut(event) {
         active.click();
       }
     }
+    return;
+  }
+  if (state.documentSwitcherOpen && event.key === "Escape") {
+    event.preventDefault();
+    state.documentSwitcherOpen = false;
+    root.querySelector(".document-switcher-panel").hidden = true;
+    root.querySelector(".document-switcher-scrim").hidden = true;
+    root.querySelector('[data-action="document-switcher"]')?.focus();
     return;
   }
   if (state.route !== "editor" || !state.model || event.defaultPrevented) return;
@@ -2995,6 +3046,7 @@ function icon(name) {
     grid: '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>',
     list: '<path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r=".7"/><circle cx="4" cy="12" r=".7"/><circle cx="4" cy="18" r=".7"/>',
     canvas: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 15 11 9l2 4 2-2 2 4"/>',
+    generic: '<circle cx="8" cy="8" r="3"/><rect x="13" y="5" width="6" height="6" rx="1"/><path d="m5 19 3-6 3 6zM14 14h5v5h-5z"/>',
     deck: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h5"/>',
     web: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M7 7h.01M10 7h.01"/>',
     mobile: '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 6h4M11 18h2"/>',
