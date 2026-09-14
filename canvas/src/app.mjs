@@ -619,16 +619,9 @@ async function openDocument(documentId) {
         ?? payload.module
         ?? "generic",
     };
-    state.currentFolder = payload.folderId
-      ? await api.openFolder(payload.folderId)
-      : null;
-    state.editorDocuments = (await loadEveryDocumentPage((cursor) =>
-      api.listDocuments(cursor, payload.folderId
-        ? { view: "folder", folderId: payload.folderId }
-        : { view: "root" }))).map(withModule);
-    state.grants = payload.access === "owner"
-      ? (await api.listGrants(documentId)).items
-      : [];
+    state.currentFolder = payload.folderId ? knownFolder(payload.folderId) : null;
+    state.editorDocuments = [];
+    state.grants = [];
     state.assets = new Map(assets);
     state.accessRemoved = false;
     state.model = performanceMonitor.measure(
@@ -652,19 +645,11 @@ async function openDocument(documentId) {
       { documentId },
     );
     state.persistence = new IndexeddbPersistence(`penkra-canvas:${documentId}`, state.model.doc);
-    await performanceMonitor.measureAsync(
+    const persistenceSync = performanceMonitor.measureAsync(
       "document.indexeddb-sync",
       () => state.persistence.whenSynced,
       { documentId },
     );
-    const offlineUpdate = performanceMonitor.measure(
-      "document.offline-diff",
-      () => Y.encodeStateAsUpdate(state.model.doc, serverStateVector),
-      { documentId },
-    );
-    if (offlineUpdate.byteLength > 2) {
-      queueEncodedUpdate(documentId, encodeUpdate(offlineUpdate));
-    }
     state.undo = createUndoManager(state.model);
     state.lastSequence = Math.max(
       payload.snapshot.throughSequence,
@@ -694,7 +679,7 @@ async function openDocument(documentId) {
     state.model.doc.on("update", state.updateListener);
     state.realtimeConnection = REALTIME_RECONNECTING;
     state.presence = null;
-    state.documentUnsubscribe = await performanceMonitor.measureAsync(
+    const subscription = performanceMonitor.measureAsync(
       "document.realtime-subscribe",
       () => api.subscribe(
         documentId,
@@ -750,6 +735,49 @@ async function openDocument(documentId) {
     state.loading = false;
     setSync("saved", "Saved");
     render();
+    void persistenceSync.then(() => {
+      if (state.document?.id !== documentId) return;
+      const offlineUpdate = performanceMonitor.measure(
+        "document.offline-diff",
+        () => Y.encodeStateAsUpdate(state.model.doc, serverStateVector),
+        { documentId },
+      );
+      if (offlineUpdate.byteLength > 2) {
+        queueEncodedUpdate(documentId, encodeUpdate(offlineUpdate));
+        void flushPending();
+      }
+      render();
+    }).catch((error) => {
+      if (state.document?.id === documentId) {
+        console.warn("Canvas could not restore locally cached document changes.", error);
+      }
+    });
+    void subscription.then((unsubscribe) => {
+      if (state.document?.id === documentId) state.documentUnsubscribe = unsubscribe;
+      else unsubscribe?.();
+    }).catch((error) => {
+      if (state.document?.id !== documentId) return;
+      console.warn("Canvas realtime subscription is unavailable.", error);
+      applyDisconnectedState(false);
+      renderSyncStatus();
+    });
+    void Promise.all([
+      payload.folderId ? api.openFolder(payload.folderId) : Promise.resolve(null),
+      loadEveryDocumentPage((cursor) => api.listDocuments(cursor, payload.folderId
+        ? { view: "folder", folderId: payload.folderId }
+        : { view: "root" })),
+      payload.access === "owner" ? api.listGrants(documentId) : Promise.resolve({ items: [] }),
+    ]).then(([folder, documents, grants]) => {
+      if (state.document?.id !== documentId) return;
+      state.currentFolder = folder;
+      state.editorDocuments = documents.map(withModule);
+      state.grants = grants.items;
+      render();
+    }).catch((error) => {
+      if (state.document?.id === documentId) {
+        console.warn("Canvas could not load secondary document controls.", error);
+      }
+    });
     await flushPending();
   } catch (error) {
     if (state.documentOpenStartedAt !== null) {

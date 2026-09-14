@@ -44,7 +44,6 @@ export function configureCanvasFonts(runtime, options = {}) {
       throw error;
     }
   });
-  fontManager.preloadWebFontFamilies();
 }
 
 export function createDownloadedFontCache(indexedDB) {
