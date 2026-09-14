@@ -6,6 +6,7 @@ import { createDocumentAssetCache } from "./document-asset-cache.mjs";
 import { hasUnloadedDocumentImages, hydrateDocumentAssets } from "./document-assets.mjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { createRouteCoordinator } from "./route-coordinator.mjs";
+import { activateLibraryTab } from "./library-navigation.mjs";
 import { createVisibleDocumentRestore } from "./visible-document-restore.mjs";
 import {
   analyzeOpenPencilCompatibility,
@@ -2019,8 +2020,11 @@ function bindLibrary() {
     search?.setSelectionRange(state.search.length, state.search.length);
   });
   root.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => {
-    state.libraryFilter = button.dataset.filter;
-    render();
+    void activateLibraryTab(state.route, button.dataset.filter, {
+      select: (filter) => { state.libraryFilter = filter; },
+      navigateToLibrary,
+      render,
+    });
   }));
   root.querySelectorAll("[data-document-id]").forEach((button) => {
     button.addEventListener("click", () => void navigateToDocument(button.dataset.documentId));
