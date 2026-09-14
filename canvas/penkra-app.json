@@ -711,6 +711,39 @@
       "handler": "documents.trash"
     },
     {
+      "key": "documents.restore",
+      "summary": "Restore one owned Canvas document from recoverable Trash to its previous folder when available, or to Home.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": ["documentId"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "restored": { "const": true }
+        },
+        "required": ["id", "restored"],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "name": "Restore a document from Trash",
+          "input": {
+            "documentId": "092d8d0f-8a53-4e95-b9ff-7ec6e222ddf9"
+          }
+        }
+      ],
+      "handler": "documents.restore"
+    },
+    {
       "key": "folders.list",
       "summary": "List accessible Canvas folders at the root, inside one parent, among recent folders, or in Trash.",
       "input": {

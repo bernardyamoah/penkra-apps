@@ -84,6 +84,8 @@ runtime.operations.handle("documents.trash", async ({ documentId, confirmTitle }
   return { documentId, title: document.title, trashed: true };
 });
 
+runtime.operations.handle("documents.restore", async ({ documentId }) => api.restoreDocument(documentId));
+
 runtime.operations.handle("documents.create", async ({ title, module, preset, folderId = null }) => {
   const source = createBlankDocumentSource({ module, preset });
   const starterFrameId = source.children[0].id;
