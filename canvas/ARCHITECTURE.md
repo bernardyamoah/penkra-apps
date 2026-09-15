@@ -23,7 +23,7 @@ workflow guidance but are not the sole source of required behavior.
 A document has one immutable module:
 
 - `deck` for slide presentations;
-- `print` for physical pages;
+- `generic` for freeform and physical-page designs;
 - `web` for responsive routes;
 - `mobile` for iOS and Android screens.
 
@@ -107,7 +107,7 @@ bleed, and fold geometry; physical size is never inferred from pixels.
 Implemented targets are:
 
 - editable PPTX for deck frames;
-- physical PDF profiles for print frames;
+- PDF, PNG, and SVG extraction for generic physical frames;
 - semantic responsive HTML/CSS for web routes;
 - SwiftUI and Jetpack Compose source for mobile screens;
 - PNG and SVG subtree export.

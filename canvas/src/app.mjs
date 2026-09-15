@@ -8,6 +8,7 @@ import { hasUnloadedDocumentImages, hydrateDocumentAssets } from "./document-ass
 import { IndexeddbPersistence } from "y-indexeddb";
 import { createRouteCoordinator } from "./route-coordinator.mjs";
 import { activateLibraryTab } from "./library-navigation.mjs";
+import { searchableDocumentText, sortCollection } from "./library-presentation.mjs";
 import { trashSummary } from "./trash-summary.mjs";
 import { createVisibleDocumentRestore } from "./visible-document-restore.mjs";
 import {
@@ -95,6 +96,13 @@ const state = {
   route: "library",
   libraryFilter: "recent",
   search: "",
+  searchScope: "everywhere",
+  searchDocumentText: new Map(),
+  searchGeneration: 0,
+  searchTimer: null,
+  searchLoading: false,
+  collectionView: "grid",
+  collectionSort: "updated",
   documents: [],
   folders: [],
   recentFolders: [],
@@ -144,7 +152,6 @@ const state = {
   grants: [],
   shareTarget: null,
   toast: null,
-  contextMenu: null,
   documentSwitcherOpen: false,
   documentUnsubscribe: null,
   folderUnsubscribe: null,
@@ -182,6 +189,8 @@ const state = {
   deletedNodeSnapshots: new Map(),
   thumbnailTimer: null,
   assetPanel: "layers",
+  layerSearch: "",
+  layerSearchOpen: false,
   inspectorTab: "design",
   documentOpenStartedAt: null,
 };
@@ -583,7 +592,6 @@ async function showTrash() {
   state.loading = false;
   state.fatalError = false;
   state.error = null;
-  state.contextMenu = null;
   state.trashLoaded = false;
   state.trashItems = [];
   state.trashNextCursor = null;
@@ -638,6 +646,39 @@ async function loadEveryDocumentPage(loadPage) {
     cursor = page.pageInfo.nextCursor ?? undefined;
   } while (cursor);
   return documents;
+}
+
+function scheduleDocumentSearch() {
+  clearTimeout(state.searchTimer);
+  const query = state.search.trim().toLocaleLowerCase();
+  if (query.length < 2 || state.route === "trash") return;
+  state.searchTimer = setTimeout(() => void indexDocumentsForSearch(query), 250);
+}
+
+async function indexDocumentsForSearch(query) {
+  const generation = ++state.searchGeneration;
+  const pending = state.documents.filter((document) => !state.searchDocumentText.has(document.id));
+  if (!pending.length) return;
+  state.searchLoading = true;
+  render();
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < pending.length && generation === state.searchGeneration) {
+      const document = pending[cursor++];
+      try {
+        const projection = await api.getDocumentProjection(document.id)
+          ?? await api.getDocument(document.id, { loadAssets: false });
+        state.searchDocumentText.set(document.id, searchableDocumentText(projection.snapshot?.source));
+      } catch (error) {
+        console.warn(`Canvas could not index ${document.id} for search.`, error);
+        state.searchDocumentText.set(document.id, "");
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
+  if (generation !== state.searchGeneration) return;
+  state.searchLoading = false;
+  if (state.search.trim().toLocaleLowerCase() === query) render();
 }
 
 function handleDocumentCollectionError(error, { phase }) {
@@ -1024,7 +1065,6 @@ function closeDocument() {
   state.presence = null;
   state.realtimeConnection = REALTIME_RECONNECTING;
   state.dialog = null;
-  state.contextMenu = null;
   state.documentSwitcherOpen = false;
   state.activeTool = "select";
   collapseEditorPanels();
@@ -1411,20 +1451,20 @@ function renderDocumentUnavailable() {
 function renderLibrary() {
   const query = state.search.trim().toLowerCase();
   const matches = (value) => !query || value.toLowerCase().includes(query);
-  const recentDocuments = [...state.documents]
+  const recentDocuments = sortCollection(state.documents
     .filter((document) => document.lastOpenedAt && matches(document.title))
-    .sort((a, b) => String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)));
-  const rootDocuments = state.documents.filter((document) => document.folderId === null && matches(document.title));
-  const rootFolders = state.folders.filter((folder) => matches(folder.name));
-  const sharedDocuments = state.documents.filter((document) => document.access === "editor" && matches(document.title));
-  const sharedFolders = state.folders.filter((folder) => folder.access === "editor" && matches(folder.name));
-  const filteredRecentFolders = state.recentFolders.filter((folder) => matches(folder.name));
+    , state.collectionSort);
+  const rootDocuments = sortCollection(state.documents.filter((document) => document.folderId === null && matches(document.title)), state.collectionSort);
+  const rootFolders = sortCollection(state.folders.filter((folder) => matches(folder.name)), state.collectionSort);
+  const sharedDocuments = sortCollection(state.documents.filter((document) => document.access === "editor" && matches(document.title)), state.collectionSort);
+  const sharedFolders = sortCollection(state.folders.filter((folder) => folder.access === "editor" && matches(folder.name)), state.collectionSort);
+  const filteredRecentFolders = sortCollection(state.recentFolders.filter((folder) => matches(folder.name)), state.collectionSort);
   const empty = state.libraryLoaded ? emptyLibrary(query) : "";
-  const content = state.libraryFilter === "recent"
-    ? `${filteredRecentFolders.length ? folderSection(filteredRecentFolders, "Folders", true) : ""}<section class="library-section"><div class="section-heading"><h2>Recent designs <span>${recentDocuments.length}</span></h2></div>${recentDocuments.length ? `<div class="document-grid">${recentDocuments.map(documentCard).join("")}</div>` : empty}</section>`
+  const content = query ? renderSearchResults(query) : state.libraryFilter === "recent"
+    ? `${folderSection(filteredRecentFolders, "Folders", true, true)}<section class="library-section"><div class="section-heading"><h2>Recent designs <span>${recentDocuments.length}</span></h2></div>${recentDocuments.length ? documentCollection(recentDocuments) : empty}</section>`
     : state.libraryFilter === "shared"
-      ? `<section class="library-section">${sharedFolders.length ? folderSection(sharedFolders, "Folders") : ""}<div class="section-heading"><h2>Shared designs <span>${sharedDocuments.length}</span></h2></div>${sharedDocuments.length ? `<div class="document-grid">${sharedDocuments.map(documentCard).join("")}</div>` : sharedFolders.length ? "" : empty}</section>`
-      : `${folderSection(rootFolders, "Folders", false, true)}<section class="library-section"><div class="section-heading"><h2>Designs <span>${rootDocuments.length}</span></h2></div>${rootDocuments.length ? `<div class="document-grid">${rootDocuments.map(documentCard).join("")}</div>` : empty}</section>`;
+      ? `<section class="library-section">${sharedFolders.length ? folderSection(sharedFolders, "Folders") : ""}<div class="section-heading"><h2>Shared designs <span>${sharedDocuments.length}</span></h2></div>${sharedDocuments.length ? documentCollection(sharedDocuments) : sharedFolders.length ? "" : empty}</section>`
+      : `${folderSection(rootFolders, "Folders", false, true)}<section class="library-section"><div class="section-heading"><h2>Unfiled designs <span>${rootDocuments.length}</span></h2></div>${rootDocuments.length ? documentCollection(rootDocuments) : empty}</section>`;
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${libraryTopbar("Search designs and folders")}${libraryTabs(state.libraryFilter)}</div>
     <div class="library-content">${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
@@ -1437,9 +1477,9 @@ function renderFolder() {
   if (!folder) return `<main class="shell empty"><div><h2>Folder unavailable</h2></div></main>`;
   const query = state.search.trim().toLowerCase();
   const matches = (value) => !query || value.toLowerCase().includes(query);
-  const folders = state.folderChildren.filter((item) => matches(item.name));
-  const documents = state.folderDocuments.filter((item) => matches(item.title));
-  const empty = state.folderCollections.has(folder.id) ? emptyLibrary(query) : "";
+  const folders = sortCollection(state.folderChildren.filter((item) => matches(item.name)), state.collectionSort);
+  const documents = sortCollection(state.folderDocuments.filter((item) => matches(item.title)), state.collectionSort);
+  const empty = state.folderCollections.has(folder.id) ? emptyFolder(folder, query) : "";
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${folderTopbar(folder)}</div>
     <div class="folder-content">
@@ -1448,7 +1488,7 @@ function renderFolder() {
       <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folders.length} folder${folders.length === 1 ? "" : "s"} · ${folder.designCount} design${folder.designCount === 1 ? "" : "s"} · Updated ${escapeHtml(relativeTime(folder.updatedAt))}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
     </header>
     ${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}
-    <section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div>${documents.length ? `<div class="document-grid">${documents.map(documentCard).join("")}</div>` : empty}</section>
+    <section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div>${documents.length ? documentCollection(documents) : empty}</section>
     </div>
   </div></main>${renderDialog()}${renderToast()}`;
 }
@@ -1465,7 +1505,7 @@ function folderTopbar(folder) {
 }
 
 function searchControl(placeholder, label = placeholder) {
-  return `<label class="search-wrap">${icon("search")}<input class="search" data-role="search" type="search" value="${escapeHtml(state.search)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(label)}" /><kbd>⌘K</kbd></label>`;
+  return `<label class="search-wrap">${icon("search")}<input class="search" data-role="search" name="canvas-search" autocomplete="off" type="search" value="${escapeHtml(state.search)}" placeholder="${escapeHtml(placeholder)}…" aria-label="${escapeHtml(label)}" /><kbd>⌘&nbsp;K</kbd></label>`;
 }
 
 function libraryTabs(active) {
@@ -1477,13 +1517,45 @@ function folderSection(folders, title, rail = false, includeNew = false, nested 
 }
 
 function collectionControls() {
-  return `<div class="collection-controls" aria-hidden="true"><span class="view-toggle">${icon("grid")}${icon("list")}</span><span class="sort-control">Last edited ${icon("chevron-down")}</span></div>`;
+  return `<div class="collection-controls"><span class="view-toggle" role="group" aria-label="Design view"><button type="button" data-collection-view="grid" aria-label="Grid view" aria-pressed="${state.collectionView === "grid"}" class="${state.collectionView === "grid" ? "active" : ""}">${icon("grid")}</button><button type="button" data-collection-view="list" aria-label="List view" aria-pressed="${state.collectionView === "list"}" class="${state.collectionView === "list" ? "active" : ""}">${icon("list")}</button></span><label class="sort-control"><span class="sr-only">Sort designs</span><select data-collection-sort name="design-sort" aria-label="Sort designs"><option value="updated" ${state.collectionSort === "updated" ? "selected" : ""}>Last edited</option><option value="name" ${state.collectionSort === "name" ? "selected" : ""}>Name</option></select>${icon("chevron-down")}</label></div>`;
+}
+
+function documentCollection(documents) {
+  return `<div class="document-grid ${state.collectionView === "list" ? "document-list" : ""}">${documents.map(documentCard).join("")}</div>`;
+}
+
+function renderSearchResults(query) {
+  const inScope = (document) => state.searchScope === "everywhere"
+    || (state.searchScope === "unfiled" ? document.folderId === null : document.folderId === state.searchScope);
+  const documents = sortCollection(state.documents.filter((document) => inScope(document) && (
+    document.title.toLocaleLowerCase().includes(query)
+    || state.searchDocumentText.get(document.id)?.includes(query)
+  )), state.collectionSort);
+  const folders = state.searchScope === "everywhere"
+    ? sortCollection(state.folders.filter((folder) => folder.name.toLocaleLowerCase().includes(query)), state.collectionSort)
+    : [];
+  const count = documents.length + folders.length;
+  const scopes = [
+    ["everywhere", "Everywhere"],
+    ...sortCollection(state.folders, "name").map((folder) => [folder.id, folder.name]),
+    ["unfiled", "Unfiled"],
+  ];
+  const scopeControls = scopes.map(([value, label]) => `<button type="button" data-search-scope="${escapeHtml(value)}" aria-pressed="${state.searchScope === value}" class="${state.searchScope === value ? "active" : ""}">${escapeHtml(label)}</button>`).join("");
+  const results = count
+    ? `${folders.length ? folderSection(folders, "Folders") : ""}<section class="library-section"><div class="section-heading"><h2>Designs <span>${documents.length}</span></h2>${state.searchLoading ? `<span class="search-indexing" role="status">Searching document text…</span>` : ""}</div>${documents.length ? documentCollection(documents) : ""}</section>`
+    : `<section class="empty search-empty"><div>${icon("search")}<h2>No designs match “${escapeHtml(state.search.trim())}”</h2><p>${state.searchLoading ? "Searching document text…" : "Try another name or location, or create a new design with this name."}</p><div class="empty-actions"><button class="button" data-action="clear-search">${icon("close")}Clear search</button><button class="button primary" data-action="create-from-search">${icon("plus")}Create “${escapeHtml(state.search.trim())}”</button></div></div></section>`;
+  return `<section class="search-results"><header class="search-results-head"><h1>Results for “${escapeHtml(state.search.trim())}” <span>${count}</span></h1><div class="search-scopes" aria-label="Search location">${scopeControls}</div></header>${results}</section>`;
 }
 
 function emptyLibrary(query = "") {
   return query
     ? `<section class="empty"><div>${icon("search")}<h2>No results found</h2><p>Try a different name or clear your search.</p></div></section>`
     : `<section class="empty"><div>${icon("file")}<h2>No designs here yet</h2><p>Create a design to get started.</p><button class="button primary" data-action="new">${icon("plus")}New design</button></div></section>`;
+}
+
+function emptyFolder(folder, query = "") {
+  if (query) return emptyLibrary(query);
+  return `<section class="empty folder-empty"><div><span class="empty-folder-art">${icon("folder")}</span><h2>Nothing in ${escapeHtml(folder.name)} yet</h2><p>Create a design here, or move designs you already have.</p><div class="empty-actions"><button class="button primary" data-action="new">${icon("plus")}New design</button><button class="button" data-action="move-designs-here">${icon("folder-plus")}Move designs here</button></div></div></section>`;
 }
 
 function renderTrash() {
@@ -1512,9 +1584,9 @@ function renderTrashTable() {
   const visibleLabel = `${visibleCount} item${visibleCount === 1 ? "" : "s"}`;
   const totalLabel = `${summary.totalCount} item${summary.totalCount === 1 ? "" : "s"} total`;
   const footer = `${summary.isFiltered ? `${visibleLabel} · ${totalLabel}` : visibleLabel}${state.trashExpiringSoonCount ? ` · ${state.trashExpiringSoonCount} expiring soon` : ""}`;
-  return `<section class="trash-table" aria-label="Deleted designs and folders">
-    <div class="trash-table-head" role="row"><span>NAME</span><span>WAS IN</span><span>DELETED</span><span>BY</span><span aria-hidden="true"></span></div>
-    <div class="trash-table-body">${state.trashItems.map(trashRow).join("")}</div>
+  return `<section class="trash-table" role="table" aria-label="Deleted designs and folders">
+    <div class="trash-table-head" role="row"><span role="columnheader">NAME</span><span role="columnheader">WAS IN</span><span role="columnheader">DELETED</span><span role="columnheader">BY</span><span role="columnheader" aria-label="Actions"></span></div>
+    <div class="trash-table-body" role="rowgroup">${state.trashItems.map(trashRow).join("")}</div>
     <footer class="trash-table-footer"><span>${escapeHtml(footer)}</span><span class="trash-agent-hint">${icon("sparkles")}Ask the Agent: “restore everything Bernard deleted yesterday”</span>${state.trashNextCursor ? `<button class="button" data-action="load-more-trash" ${state.trashLoadingMore ? "disabled" : ""}>${state.trashLoadingMore ? "Loading…" : "Load more"}</button>` : ""}</footer>
   </section>`;
 }
@@ -1526,13 +1598,13 @@ function trashRow(item) {
     : `Folder · ${item.designCount} design${item.designCount === 1 ? "" : "s"} inside — restore brings ${item.designCount === 1 ? "it" : "them"} all back`;
   const actor = item.deletedBy;
   const actorLabel = actor ? (actor.isCurrentUser ? "You" : actor.name?.trim() || "Unknown") : "Unknown";
-  return `<article class="trash-table-row" data-trash-kind="${item.kind}">
-    <span class="trash-name-cell"><i class="trash-item-icon ${item.kind}">${icon(document ? "deck" : "folder")}</i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span></span>
-    <span class="trash-path-cell" title="${escapeHtml(item.previousPath)}">${escapeHtml(item.previousPath)}</span>
-    <span class="trash-deleted-cell"><strong>${escapeHtml(relativeTime(item.deletedAt))}</strong><small>Gone in ${daysUntil(item.recoverableUntil)} day${daysUntil(item.recoverableUntil) === 1 ? "" : "s"}</small></span>
-    <span class="trash-actor-cell">${actor ? avatar(actor) : `<span class="avatar avatar-fallback" aria-hidden="true">?</span>`}<span>${escapeHtml(actorLabel)}</span></span>
-    <span class="trash-row-actions"><button class="button" data-${document ? "restore-document" : "restore-folder"}="${item.id}">Restore${document ? "" : " folder"}</button><button class="icon-button trash-delete" data-${document ? "permanently-delete-document" : "delete-folder"}="${item.id}" aria-label="Permanently delete ${escapeHtml(item.title)}" title="Delete permanently">${icon("trash")}</button></span>
-  </article>`;
+  return `<div class="trash-table-row" role="row" data-trash-kind="${item.kind}">
+    <span class="trash-name-cell" role="cell"><i class="trash-item-icon ${item.kind}">${icon(document ? "deck" : "folder")}</i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span></span>
+    <span class="trash-path-cell" role="cell" title="${escapeHtml(item.previousPath)}">${escapeHtml(item.previousPath)}</span>
+    <span class="trash-deleted-cell" role="cell"><strong>${escapeHtml(relativeTime(item.deletedAt))}</strong><small>Gone in ${daysUntil(item.recoverableUntil)} day${daysUntil(item.recoverableUntil) === 1 ? "" : "s"}</small></span>
+    <span class="trash-actor-cell" role="cell">${actor ? avatar(actor) : `<span class="avatar avatar-fallback" aria-hidden="true">?</span>`}<span>${escapeHtml(actorLabel)}</span></span>
+    <span class="trash-row-actions" role="cell"><button class="button" data-${document ? "restore-document" : "restore-folder"}="${item.id}">Restore${document ? "" : " folder"}</button><button class="icon-button trash-delete" data-${document ? "permanently-delete-document" : "delete-folder"}="${item.id}" aria-label="Permanently delete ${escapeHtml(item.title)}" title="Delete permanently">${icon("trash")}</button></span>
+  </div>`;
 }
 
 function trashUnitLabel(module, count) {
@@ -1547,7 +1619,7 @@ function segment(key, label) {
 function documentCard(document) {
   const preview = state.thumbnails.get(document.id);
   const editor = document.lastEditor && !document.lastEditor.isCurrentUser ? avatar(document.lastEditor) : "";
-  return `<button class="document-card" data-document-id="${document.id}"><span class="document-preview">${preview ? `<img src="${preview}" alt="" />` : `<span class="preview-placeholder">${icon("frame")}</span>`}</span><span class="document-meta"><strong>${escapeHtml(document.title)}</strong><span class="document-submeta"><span>${escapeHtml(moduleLabel(document.module))}</span><span>Edited ${escapeHtml(relativeTime(document.updatedAt))}</span>${editor}</span></span></button>`;
+  return `<article class="document-card"><button class="document-card-main" data-document-id="${document.id}" aria-label="Open ${escapeHtml(document.title)}"><span class="document-preview">${preview ? `<img src="${preview}" alt="" width="504" height="300" loading="lazy" />` : `<span class="preview-placeholder">${icon("frame")}</span>`}</span><span class="document-meta"><strong>${escapeHtml(document.title)}</strong><span class="document-submeta"><span>${escapeHtml(moduleLabel(document.module))}</span><span>Edited ${escapeHtml(relativeTime(document.updatedAt))}</span>${editor}</span></span></button><button class="icon-button card-menu" data-document-menu="${document.id}" aria-label="Actions for ${escapeHtml(document.title)}">${icon("more")}</button></article>`;
 }
 
 function folderCard(folder, nested = false) {
@@ -1558,7 +1630,7 @@ function folderCard(folder, nested = false) {
   const content = nested
     ? `<span><strong>${escapeHtml(folder.name)}</strong><small>${escapeHtml(detail)}</small></span>`
     : `<span class="folder-card-content"><span class="folder-card-copy"><strong>${escapeHtml(folder.name)}</strong><small>${escapeHtml(detail)}</small></span><span class="folder-card-footer"><small>${escapeHtml(elapsed)}</small>${people}</span></span>`;
-  return `<button class="folder-card ${nested ? "nested-folder-card" : ""}" data-folder-id="${folder.id}">${nested ? `<span class="folder-icon">${icon("folder")}</span>` : ""}${content}</button>`;
+  return `<article class="folder-card-shell ${nested ? "nested-folder-card-shell" : ""}"><button class="folder-card ${nested ? "nested-folder-card" : ""}" data-folder-id="${folder.id}">${nested ? `<span class="folder-icon">${icon("folder")}</span>` : ""}${content}</button><button class="icon-button card-menu" data-folder-menu="${folder.id}" aria-label="Actions for ${escapeHtml(folder.name)}">${icon("more")}</button></article>`;
 }
 
 function folderPeopleProfiles(folder, { inheritCurrentFolder = false } = {}) {
@@ -1590,20 +1662,12 @@ function moduleLabel(value) {
 function avatar(profile) {
   const label = profile.name?.trim() || "Collaborator";
   return profile.avatarUrl
-    ? `<img class="avatar" src="${escapeHtml(profile.avatarUrl)}" alt="${escapeHtml(label)}" />`
+    ? `<img class="avatar" src="${escapeHtml(profile.avatarUrl)}" alt="${escapeHtml(label)}" width="34" height="34" loading="lazy" />`
     : `<span class="avatar avatar-fallback" aria-label="${escapeHtml(label)}">${escapeHtml(initials(label))}</span>`;
 }
 
 function initials(value) {
   return value.split(/\s+/u).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
-}
-
-function renderContextMenu() {
-  const menu = state.contextMenu;
-  if (!menu) return "";
-  const document = state.documents.find((item) => item.id === menu.documentId);
-  if (!document || document.access !== "owner") return "";
-  return `<div class="context-menu-backdrop" data-role="context-menu-layer" data-action="close-context-menu"><div class="context-menu" role="menu" aria-label="${escapeHtml(document.title)} actions" style="left:${menu.x}px;top:${menu.y}px"><button role="menuitem" data-trash-document="${document.id}">${icon("trash")}<span>Move to Trash</span></button></div></div>`;
 }
 
 function renderDocumentSwitcher() {
@@ -1620,7 +1684,7 @@ function renderDocumentSwitcher() {
     }).join("")
     : "";
   const hidden = state.documentSwitcherOpen ? "" : " hidden";
-  return `<div class="document-switcher-scrim" data-action="close-document-switcher" aria-hidden="true"${hidden}></div><section class="document-switcher-panel" role="dialog" aria-label="Switch design"${hidden}><label class="document-switcher-search">${icon("search")}<input data-role="document-switcher-search" type="search" placeholder="Switch to another design in ${escapeHtml(folderName)}…" aria-label="Search designs in ${escapeHtml(folderName)}" /></label><div class="document-switcher-heading"><strong>IN ${escapeHtml(folderName.toUpperCase())} · ${state.editorDocuments.length}</strong><span>Recent first</span></div><div class="document-switcher-list">${rows}<p class="document-switcher-empty" ${documents.length ? "hidden" : ""}>No designs found</p></div><div class="document-switcher-footer"><button data-action="switcher-new-design">${icon("plus")}<span>New design in ${escapeHtml(folderName)}</span><kbd>⌘N</kbd></button><button data-action="switcher-open-folder">${icon("folder")}<span>Open ${escapeHtml(folderName)} folder</span>${icon("chevron")}</button></div></section>`;
+  return `<div class="document-switcher-scrim" data-action="close-document-switcher" aria-hidden="true"${hidden}></div><section class="document-switcher-panel" role="dialog" aria-modal="true" aria-label="Switch design"${hidden}><label class="document-switcher-search">${icon("search")}<input data-role="document-switcher-search" name="document-switcher-search" autocomplete="off" type="search" placeholder="Switch to another design in ${escapeHtml(folderName)}…" aria-label="Search designs in ${escapeHtml(folderName)}" /></label><div class="document-switcher-heading"><strong>IN ${escapeHtml(folderName.toUpperCase())} · ${state.editorDocuments.length}</strong><span>Recent first</span></div><div class="document-switcher-list">${rows}<p class="document-switcher-empty" ${documents.length ? "hidden" : ""}>No designs found</p></div><div class="document-switcher-footer"><button data-action="switcher-new-design">${icon("plus")}<span>New design in ${escapeHtml(folderName)}</span><kbd>⌘&nbsp;N</kbd></button><button data-action="switcher-open-folder">${icon("folder")}<span>Open ${escapeHtml(folderName)} folder</span>${icon("chevron")}</button></div></section>`;
 }
 
 function renderEditor() {
@@ -1641,21 +1705,21 @@ function renderEditor() {
   return `<main class="shell editor">
     <header class="editor-header">
       <div class="editor-header-left">
-        <button class="icon-button editor-panel-toggle" data-action="toggle-layers" aria-label="${state.layersOpen ? "Hide" : "Show"} layers panel">${icon("panel-left")}</button>
+        <button class="icon-button editor-panel-toggle" data-action="toggle-layers" aria-label="${state.layersOpen ? "Hide" : "Show"} layers panel" aria-expanded="${state.layersOpen}">${icon("panel-left")}</button>
         <button class="icon-button editor-back" data-action="back" aria-label="Back to files">${icon("back")}</button>
-        <div class="editor-title"><input data-role="title" size="${Math.min(42, Math.max(1, state.document.title.length))}" value="${escapeHtml(state.document.title)}" aria-label="Document title" /><button class="document-switcher" data-action="document-switcher" aria-label="Switch design">${icon("chevron-down")}</button></div>
+        <div class="editor-title"><input data-role="title" name="document-title" autocomplete="off" size="${Math.min(42, Math.max(1, state.document.title.length))}" value="${escapeHtml(state.document.title)}" aria-label="Document title" /><button class="document-switcher" data-action="document-switcher" aria-label="Switch design">${icon("chevron-down")}</button></div>
         <span class="module-badge">${escapeHtml(moduleLabel(state.document.module))}</span>
         <div class="sync" data-state="${state.sync}" title="${escapeHtml(state.syncMessage)}" role="status" aria-live="polite">${state.sync === "saved" ? icon("check") : `<i class="sync-dot"></i>`}<span>${escapeHtml(state.syncMessage)}</span></div>
       </div>
       <div class="editor-header-right">
         ${editorPeople.length ? `<div class="editor-avatars" aria-label="People with access">${editorPeople.map(avatar).join("")}</div>` : ""}
         ${state.document.access === "owner" ? `<button class="button editor-share" data-action="share">${icon("person-plus")}<span>Share</span></button>` : ""}
-        <button class="icon-button editor-panel-toggle" data-action="toggle-inspector" aria-label="${state.inspectorOpen ? "Hide" : "Show"} design panel">${icon("panel-right")}</button>
+        <button class="icon-button editor-panel-toggle" data-action="toggle-inspector" aria-label="${state.inspectorOpen ? "Hide" : "Show"} design panel" aria-expanded="${state.inspectorOpen}">${icon("panel-right")}</button>
       </div>
     </header>
     <div class="editor-body ${panelVisibilityClass}">
       <aside class="side-panel layers" ${state.layersOpen ? "" : "hidden"}>
-        <div class="panel-tabs"><button class="${state.assetPanel === "layers" ? "active" : ""}" data-asset-panel="layers">Layers</button><button class="${state.assetPanel === "assets" ? "active" : ""}" data-asset-panel="assets">Assets</button><button class="${state.assetPanel === "variables" ? "active" : ""}" data-asset-panel="variables">Variables</button></div>
+        <div class="panel-tabs" role="group" aria-label="Library panel"><button class="${state.assetPanel === "layers" ? "active" : ""}" data-asset-panel="layers" aria-pressed="${state.assetPanel === "layers"}">Layers</button><button class="${state.assetPanel === "assets" ? "active" : ""}" data-asset-panel="assets" aria-pressed="${state.assetPanel === "assets"}">Assets</button><button class="${state.assetPanel === "variables" ? "active" : ""}" data-asset-panel="variables" aria-pressed="${state.assetPanel === "variables"}">Variables</button></div>
         ${renderLayersPanelHeader(layerNodes)}
         <div class="panel-scroll">${state.layersOpen ? renderLayersPanelContent(layerNodes) : ""}</div>
       </aside>
@@ -1664,7 +1728,7 @@ function renderEditor() {
         ${state.realtimeConnection === REALTIME_RECONNECTING && navigator.onLine ? `<div class="connection-banner">${icon("refresh")}<span>Reconnecting and merging changes</span></div>` : ""}
         ${unsupported.length ? `<div class="compatibility-banner"><span>${unsupportedNodeCount} object${unsupportedNodeCount === 1 ? " needs" : "s need"} compatibility review</span><button class="button" data-action="compatibility">Review</button></div>` : ""}
       </section>
-      <aside class="side-panel inspector" ${state.inspectorOpen ? "" : "hidden"}><div class="panel-tabs"><button class="${state.inspectorTab === "design" ? "active" : ""}" data-inspector-tab="design">Design</button><button class="${state.inspectorTab === "prototype" ? "active" : ""}" data-inspector-tab="prototype">Prototype</button><button class="${state.inspectorTab === "review" ? "active" : ""}" data-inspector-tab="review">Review</button></div><div class="panel-scroll">${renderInspectorPanel(selection)}</div></aside>
+      <aside class="side-panel inspector" ${state.inspectorOpen ? "" : "hidden"}><div class="panel-tabs" role="group" aria-label="Inspector panel"><button class="${state.inspectorTab === "design" ? "active" : ""}" data-inspector-tab="design" aria-pressed="${state.inspectorTab === "design"}">Design</button><button class="${state.inspectorTab === "prototype" ? "active" : ""}" data-inspector-tab="prototype" aria-pressed="${state.inspectorTab === "prototype"}">Prototype</button><button class="${state.inspectorTab === "review" ? "active" : ""}" data-inspector-tab="review" aria-pressed="${state.inspectorTab === "review"}">Review</button></div><div class="panel-scroll">${renderInspectorPanel(selection)}</div></aside>
     </div>
     ${renderDocumentSwitcher()}
   </main>${renderDialog()}${renderToast()}`;
@@ -1903,6 +1967,7 @@ function renderLayersTree() {
   const toolbarHtml = renderLayersPanelHeader(nodes);
   if (toolbar && toolbarHtml) toolbar.replaceWith(fragment(toolbarHtml));
   scroll.innerHTML = renderLayersPanelContent(nodes);
+  bindLayerToolbar();
   bindLayersTree();
 }
 
@@ -1920,9 +1985,24 @@ function currentVisibleLayerNodes(fallback = currentDocumentNodes()) {
 }
 
 function renderLayersPanelContent(nodes) {
-  if (state.assetPanel === "assets") return `<div class="inspector-empty">Reusable components and document assets appear here.</div>`;
-  if (state.assetPanel === "variables") return `<div class="inspector-empty">Document variables appear here.</div>`;
-  return `<div role="tree" aria-label="Document layers">${nodes.map(layerRow).join("")}</div><div class="components-row">${icon("component")}<span>Components</span><span class="components-count">${componentDefinitionCount()}</span></div>`;
+  if (state.assetPanel === "assets") {
+    const components = Object.keys(currentMaterializedDocument()?.components ?? {});
+    const assets = [...state.assets.keys()];
+    const rows = [
+      ...components.map((name) => `<li>${icon("component")}<span>${escapeHtml(name)}</span><small>Component</small></li>`),
+      ...assets.map((name) => `<li>${icon("image")}<span>${escapeHtml(name)}</span><small>Asset</small></li>`),
+    ];
+    return rows.length ? `<ul class="panel-resource-list">${rows.join("")}</ul>` : panelEmpty("No components or assets yet.");
+  }
+  if (state.assetPanel === "variables") {
+    const variables = Object.entries(currentMaterializedDocument()?.variables ?? {});
+    return variables.length
+      ? `<ul class="panel-resource-list">${variables.map(([name, value]) => `<li>${icon("type")}<span>${escapeHtml(name)}</span><small>${escapeHtml(variablePreview(value))}</small></li>`).join("")}</ul>`
+      : panelEmpty("No document variables yet.");
+  }
+  const query = state.layerSearch.trim().toLocaleLowerCase();
+  const visible = query ? nodes.filter(({ node }) => String(node.name ?? node.content ?? node.type).toLocaleLowerCase().includes(query)) : nodes;
+  return `<div role="tree" aria-label="Document layers">${visible.map(layerRow).join("") || panelEmpty("No layers match this search.")}</div><div class="components-row">${icon("component")}<span>Components</span><span class="components-count">${componentDefinitionCount()}</span></div>`;
 }
 
 function renderLayersPanelHeader(nodes) {
@@ -1931,7 +2011,16 @@ function renderLayersPanelHeader(nodes) {
   const label = labels[state.document?.module] ?? "Frames";
   const count = nodes.filter(({ depth }) => depth === 0).length;
   const lower = label.toLowerCase();
-  return `<div class="layers-toolbar"><span>${escapeHtml(label)} <b>${count}</b></span><div><button class="icon-button" aria-label="Search ${escapeHtml(lower)}">${icon("search")}</button><button class="icon-button" aria-label="Add ${escapeHtml(lower)}">${icon("plus")}</button></div></div>`;
+  return `<div class="layers-toolbar">${state.layerSearchOpen ? `<label class="layer-search">${icon("search")}<input type="search" name="layer-search" autocomplete="off" data-role="layer-search" value="${escapeHtml(state.layerSearch)}" placeholder="Search ${escapeHtml(lower)}…" aria-label="Search ${escapeHtml(lower)}" /></label>` : `<span>${escapeHtml(label)} <b>${count}</b></span>`}<div><button class="icon-button" data-action="toggle-layer-search" aria-label="${state.layerSearchOpen ? "Close" : "Search"} ${escapeHtml(lower)}">${icon(state.layerSearchOpen ? "close" : "search")}</button><button class="icon-button" data-action="add-root-frame" aria-label="Add ${escapeHtml(lower)}">${icon("plus")}</button></div></div>`;
+}
+
+function panelEmpty(text) {
+  return `<p class="panel-empty">${escapeHtml(text)}</p>`;
+}
+
+function variablePreview(value) {
+  const resolved = value && typeof value === "object" && "value" in value ? value.value : value;
+  return typeof resolved === "object" ? JSON.stringify(resolved) : String(resolved ?? "");
 }
 
 function componentDefinitionCount() {
@@ -1946,8 +2035,17 @@ function fragment(html) {
 }
 
 function renderInspectorPanel(selection) {
-  if (state.inspectorTab === "prototype") return `<div class="inspector-empty">Prototype settings appear here.</div>`;
-  if (state.inspectorTab === "review") return `<div class="inspector-empty">Review notes appear here.</div>`;
+  if (state.inspectorTab === "prototype") {
+    const flows = currentMaterializedDocument()?.flows ?? [];
+    return flows.length
+      ? `<section class="section"><h3>Prototype flows</h3><ul class="inspector-list">${flows.map((flow) => `<li><strong>${escapeHtml(flow.name ?? flow.id)}</strong><span>${escapeHtml(flow.trigger?.kind ?? "Trigger")} → ${escapeHtml(flow.destination ?? flow.target ?? "Destination")}</span></li>`).join("")}</ul></section>`
+      : panelEmpty("No prototype flows in this design.");
+  }
+  if (state.inspectorTab === "review") {
+    return state.compatibilityIssues.length
+      ? `<section class="section"><h3>Compatibility review</h3><ul class="inspector-list">${state.compatibilityIssues.map((issue) => `<li><strong>${escapeHtml(issue.nodeId)}</strong><span>${escapeHtml(issue.message)}</span></li>`).join("")}</ul></section>`
+      : panelEmpty("No compatibility issues detected.");
+  }
   return renderInspector(selection);
 }
 
@@ -2082,6 +2180,12 @@ function syncPanelVisibility() {
   }
   root.querySelector(".side-panel.layers")?.toggleAttribute("hidden", !state.layersOpen);
   root.querySelector(".side-panel.inspector")?.toggleAttribute("hidden", !state.inspectorOpen);
+  const layersToggle = root.querySelector('[data-action="toggle-layers"]');
+  layersToggle?.setAttribute("aria-label", `${state.layersOpen ? "Hide" : "Show"} layers panel`);
+  layersToggle?.setAttribute("aria-expanded", String(state.layersOpen));
+  const inspectorToggle = root.querySelector('[data-action="toggle-inspector"]');
+  inspectorToggle?.setAttribute("aria-label", `${state.inspectorOpen ? "Hide" : "Show"} design panel`);
+  inspectorToggle?.setAttribute("aria-expanded", String(state.inspectorOpen));
   performanceMonitor.record("ui.panel", performance.now() - startedAt, {
     documentId: state.document?.id,
     layersOpen: state.layersOpen,
@@ -2115,11 +2219,11 @@ function field(property, value, type = "text", full = false, nodeId = "", option
     const text = state.fieldDrafts.has(key)
       ? displayed
       : kind === "json" ? JSON.stringify(value, null, 2) : displayed;
-    control = `<textarea id="field-${property}" class="field field-area" ${attributes} ${invalid}>${escapeHtml(text)}</textarea>`;
+    control = `<textarea id="field-${property}" class="field field-area" name="${escapeHtml(property)}" autocomplete="off" ${attributes} ${invalid}>${escapeHtml(text)}</textarea>`;
   } else if (kind === "boolean") {
-    control = `<input id="field-${property}" class="field field-check" type="checkbox" ${attributes} ${displayed ? "checked" : ""} ${invalid} />`;
+    control = `<input id="field-${property}" class="field field-check" name="${escapeHtml(property)}" type="checkbox" ${attributes} ${displayed ? "checked" : ""} ${invalid} />`;
   } else {
-    control = `<input id="field-${property}" class="field" type="${type === "number" ? "number" : "text"}" ${attributes} value="${escapeHtml(displayed)}" ${invalid} />`;
+    control = `<input id="field-${property}" class="field" name="${escapeHtml(property)}" autocomplete="off" type="${type === "number" ? "number" : "text"}" ${attributes} value="${escapeHtml(displayed)}" ${invalid} />`;
   }
   return `<div class="field-row ${full ? "full" : ""}"><label for="field-${property}">${escapeHtml(label)}</label>${control}${error ? `<span class="field-error" id="field-${property}-error">${escapeHtml(error)}</span>` : ""}</div>`;
 }
@@ -2167,6 +2271,11 @@ function bindLibrary() {
   }));
   root.querySelector('[data-role="search"]')?.addEventListener("input", (event) => {
     state.search = event.target.value;
+    if (!state.search.trim()) {
+      state.searchScope = "everywhere";
+      state.searchLoading = false;
+      state.searchGeneration += 1;
+    }
     render();
     const search = root.querySelector('[data-role="search"]');
     search?.focus();
@@ -2174,7 +2283,39 @@ function bindLibrary() {
     if (state.route === "trash") {
       clearTimeout(state.trashSearchTimer);
       state.trashSearchTimer = setTimeout(() => void documentCollectionLifecycle.refresh(), 200);
+    } else {
+      scheduleDocumentSearch();
     }
+  });
+  root.querySelectorAll("[data-collection-view]").forEach((button) => button.addEventListener("click", () => {
+    state.collectionView = button.dataset.collectionView;
+    render();
+  }));
+  root.querySelectorAll("[data-collection-sort]").forEach((select) => select.addEventListener("change", () => {
+    state.collectionSort = select.value;
+    render();
+  }));
+  root.querySelectorAll("[data-search-scope]").forEach((button) => button.addEventListener("click", () => {
+    state.searchScope = button.dataset.searchScope;
+    render();
+  }));
+  root.querySelector('[data-action="clear-search"]')?.addEventListener("click", () => {
+    state.search = "";
+    state.searchScope = "everywhere";
+    state.searchGeneration += 1;
+    state.searchLoading = false;
+    render();
+    root.querySelector('[data-role="search"]')?.focus();
+  });
+  root.querySelector('[data-action="create-from-search"]')?.addEventListener("click", () => {
+    state.dialog = { kind: "new-design", name: state.search.trim() };
+    state.dialogFocusSelector = '[data-role="design-name"]';
+    render();
+  });
+  root.querySelector('[data-action="move-designs-here"]')?.addEventListener("click", () => {
+    state.dialog = { kind: "move-designs-here", folderId: state.currentFolder.id, folderName: state.currentFolder.name };
+    state.dialogFocusSelector = '[data-role="move-design-checkbox"]';
+    render();
   });
   root.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => {
     void activateLibraryTab(state.route, button.dataset.filter, {
@@ -2193,6 +2334,11 @@ function bindLibrary() {
       void openDocumentContextMenu(document);
     });
   });
+  root.querySelectorAll("[data-document-menu]").forEach((button) => button.addEventListener("click", () => {
+    const document = [...state.documents, ...state.folderDocuments]
+      .find((item) => item.id === button.dataset.documentMenu);
+    if (document) void openDocumentContextMenu(document);
+  }));
   root.querySelectorAll("[data-folder-id]").forEach((button) => {
     button.addEventListener("click", () => void navigateToFolder(button.dataset.folderId));
     button.addEventListener("pointerenter", () => {
@@ -2206,6 +2352,11 @@ function bindLibrary() {
       void openFolderContextMenu(folder);
     });
   });
+  root.querySelectorAll("[data-folder-menu]").forEach((button) => button.addEventListener("click", () => {
+    const folder = [...state.folders, ...state.recentFolders, ...state.folderChildren]
+      .find((item) => item.id === button.dataset.folderMenu);
+    if (folder) void openFolderContextMenu(folder);
+  }));
   root.querySelectorAll("[data-restore-document]").forEach((button) => button.addEventListener("click", () => void act(async () => {
     await api.restoreDocument(button.dataset.restoreDocument);
     await documentCollectionLifecycle.refresh();
@@ -2248,6 +2399,7 @@ async function openDocumentContextMenu(document) {
   const folders = await loadFolderTree();
   const action = await runtime.contextMenu.show([
     { id: "open", label: "Open" },
+    ...(document.access === "owner" ? [{ id: "rename", label: "Rename" }] : []),
     { id: "duplicate", label: "Duplicate" },
     { type: "submenu", label: "Move to folder", items: [
       ...folderMoveMenu(folders, document.folderId),
@@ -2255,12 +2407,19 @@ async function openDocumentContextMenu(document) {
       { id: "move:root", label: "Unfiled (Home)", enabled: document.folderId !== null },
       { id: "new-folder", label: "New folder…" },
     ] },
+    ...(document.folderId ? [{ id: "remove", label: `Remove from ${knownFolder(document.folderId)?.name ?? "folder"}` }] : []),
     ...(document.access === "owner" ? [{ id: "share", label: "Share" }] : []),
+    { id: "export", label: "Export" },
     { type: "separator" },
     { id: "trash", label: "Move to Trash", destructive: true },
   ]);
   if (!action) return;
   if (action === "open") return navigateToDocument(document.id);
+  if (action === "rename") {
+    state.dialog = { kind: "document-rename", documentId: document.id, name: document.title };
+    state.dialogFocusSelector = '[data-role="document-name"]';
+    return render();
+  }
   if (action === "duplicate") return duplicateDocument(document);
   if (action === "new-folder") {
     state.dialog = {
@@ -2279,7 +2438,19 @@ async function openDocumentContextMenu(document) {
       render();
     });
   }
+  if (action === "remove") {
+    return act(async () => {
+      const moved = await api.moveDocument(document.id, null);
+      upsertDocumentSummary(moved, document.folderId);
+      render();
+    });
+  }
   if (action === "share") return openShare({ type: "document", id: document.id, name: document.title });
+  if (action === "export") {
+    state.dialog = { kind: "export-handoff", documentId: document.id, name: document.title };
+    state.dialogFocusSelector = '[data-action="open-export-design"]';
+    return render();
+  }
   if (action === "trash") {
     state.dialog = documentTrashConfirmation(document, { returnDialog: null, returnFocusSelector: `[data-document-id="${document.id}"]` });
     state.dialogFocusSelector = '[data-action="cancel-confirmation"]';
@@ -2304,6 +2475,7 @@ async function openFolderContextMenu(folder) {
   const action = await runtime.contextMenu.show([
     { id: "open", label: "Open" },
     ...(folder.access === "owner" ? [
+      { id: "new-folder", label: "New folder inside" },
       { id: "rename", label: "Rename" },
       { type: "submenu", label: "Move to", items: [
         { id: "move:root", label: "All Designs", enabled: folder.parentId !== null },
@@ -2317,6 +2489,11 @@ async function openFolderContextMenu(folder) {
   ]);
   if (!action) return;
   if (action === "open") return navigateToFolder(folder.id);
+  if (action === "new-folder") {
+    state.dialog = { kind: "folder-form", mode: "create-child", parentId: folder.id };
+    state.dialogFocusSelector = '[data-role="folder-name"]';
+    return render();
+  }
   if (action === "rename") {
     state.dialog = { kind: "folder-form", mode: "rename", folderId: folder.id, name: folder.name };
     state.dialogFocusSelector = '[data-role="folder-name"]';
@@ -2414,6 +2591,7 @@ function bindEditor() {
     state.inspectorTab = button.dataset.inspectorTab;
     render();
   }));
+  bindLayerToolbar();
   root.querySelector('[data-role="title"]')?.addEventListener("change", (event) => void act(async () => {
     const title = event.target.value.trim();
     if (!title || title === state.document.title) return;
@@ -2490,6 +2668,37 @@ function bindEditor() {
   root.querySelector('[data-action="cancel-confirmation"]')?.addEventListener("click", cancelDestructiveConfirmation);
   root.querySelector('[data-action="confirm-trash-document"]')?.addEventListener("click", () => void confirmDestructiveAction());
   root.querySelector('[data-action="confirm-remove-collaborator"]')?.addEventListener("click", () => void confirmDestructiveAction());
+}
+
+function bindLayerToolbar() {
+  root.querySelector('[data-action="toggle-layer-search"]')?.addEventListener("click", () => {
+    state.layerSearchOpen = !state.layerSearchOpen;
+    if (!state.layerSearchOpen) state.layerSearch = "";
+    renderLayersTree();
+    if (state.layerSearchOpen) root.querySelector('[data-role="layer-search"]')?.focus();
+  });
+  root.querySelector('[data-role="layer-search"]')?.addEventListener("input", (event) => {
+    state.layerSearch = event.target.value;
+    const scroll = root.querySelector(".side-panel.layers .panel-scroll");
+    if (scroll) {
+      scroll.innerHTML = renderLayersPanelContent(currentVisibleLayerNodes());
+      bindLayersTree();
+    }
+  });
+  root.querySelector('[data-action="add-root-frame"]')?.addEventListener("click", addRootFrame);
+}
+
+function addRootFrame() {
+  if (!state.model || !state.document) return;
+  const existing = currentDocumentNodes().filter(({ depth }) => depth === 0);
+  const frame = structuredClone(createBlankDocumentSource({ module: state.document.module }).children[0]);
+  frame.id = crypto.randomUUID();
+  frame.name = `${({ deck: "Slide", web: "Route", mobile: "Screen", generic: "Frame" })[state.document.module] ?? "Frame"} ${existing.length + 1}`;
+  frame.x += existing.length * 40;
+  frame.y += existing.length * 40;
+  mutate(state.model, { kind: "insert-node", node: frame, parentId: null, position: existing.length }, LOCAL_ORIGIN);
+  queueMicrotask(() => selectNode(frame.id, { focus: true }));
+  setToast(`${frame.name} added.`);
 }
 
 function bindLayersTree() {
@@ -2771,6 +2980,28 @@ function handleKeyboardShortcut(event) {
     }
     return;
   }
+  const command = event.metaKey || event.ctrlKey;
+  if (command && event.key.toLocaleLowerCase() === "k") {
+    event.preventDefault();
+    const search = root.querySelector('[data-role="search"]');
+    if (search) search.focus();
+    else if (state.route === "editor") {
+      state.documentSwitcherOpen = true;
+      root.querySelector(".document-switcher-panel").hidden = false;
+      root.querySelector(".document-switcher-scrim").hidden = false;
+      root.querySelector('[data-role="document-switcher-search"]')?.focus();
+    }
+    return;
+  }
+  if (state.documentSwitcherOpen && command && event.key.toLocaleLowerCase() === "n") {
+    event.preventDefault();
+    root.querySelector('[data-action="switcher-new-design"]')?.click();
+    return;
+  }
+  if (state.documentSwitcherOpen && event.key === "Tab") {
+    trapFocusWithin(event, root.querySelector(".document-switcher-panel"));
+    return;
+  }
   if (state.documentSwitcherOpen && event.key === "Escape") {
     event.preventDefault();
     state.documentSwitcherOpen = false;
@@ -2782,7 +3013,6 @@ function handleKeyboardShortcut(event) {
   if (state.route !== "editor" || !state.model || event.defaultPrevented) return;
   const target = event.target;
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
-  const command = event.metaKey || event.ctrlKey;
   if (command && event.key.toLowerCase() === "z") {
     event.preventDefault();
     if (event.shiftKey) redo();
@@ -2953,11 +3183,34 @@ function renderDialog() {
       `<button class="button" data-action="cancel-confirmation" autofocus>Cancel</button><button class="button danger" data-action="confirm-remove-collaborator">Remove access</button>`,
     );
   }
+  if (state.dialog.kind === "document-rename") {
+    return dialog(
+      "Rename design",
+      `<div class="field-row"><label for="document-name">Name</label><input id="document-name" class="field" name="document-name" autocomplete="off" data-role="document-name" value="${escapeHtml(state.dialog.name)}" /></div>`,
+      `<button class="button" data-action="close-dialog">Cancel</button><button class="button primary" data-action="save-document-name">Rename</button>`,
+    );
+  }
+  if (state.dialog.kind === "move-designs-here") {
+    const candidates = sortCollection(state.documents.filter((document) => document.folderId !== state.dialog.folderId && document.access === "owner"), "name");
+    const rows = candidates.map((document) => `<label class="move-design-row"><input type="checkbox" name="move-design" data-role="move-design-checkbox" value="${document.id}" /><span><strong>${escapeHtml(document.title)}</strong><small>${escapeHtml(knownFolder(document.folderId)?.name ?? "Unfiled")}</small></span></label>`).join("");
+    return dialog(
+      `Move designs to ${state.dialog.folderName}`,
+      rows ? `<p class="dialog-intro">Select one or more designs. Their sharing settings stay unchanged.</p><div class="move-design-list">${rows}</div>` : `<section class="dialog-empty"><p>Every design is already in this folder.</p></section>`,
+      `<button class="button" data-action="close-dialog">Cancel</button><button class="button primary" data-action="confirm-move-designs" ${rows ? "" : "disabled"}>Move selected</button>`,
+    );
+  }
+  if (state.dialog.kind === "export-handoff") {
+    return dialog(
+      "Export design",
+      `<p>Canvas exports are generated by the trusted App operation so destination access and compatibility checks remain explicit. Open the design, then ask the Agent to export the required frames and format.</p>`,
+      `<button class="button" data-action="close-dialog">Cancel</button><button class="button primary" data-action="open-export-design">Open design</button>`,
+    );
+  }
   if (state.dialog.kind === "folder-form") {
     const creating = state.dialog.mode !== "rename";
     return dialog(
       creating ? "New folder" : "Rename folder",
-      `<div class="field-row"><label for="folder-name">Name</label><input id="folder-name" class="field" data-role="folder-name" value="${escapeHtml(state.dialog.name ?? "")}" /></div>`,
+      `<div class="field-row"><label for="folder-name">Name</label><input id="folder-name" class="field" name="folder-name" autocomplete="off" data-role="folder-name" value="${escapeHtml(state.dialog.name ?? "")}" /></div>`,
       `<button class="button" data-action="cancel-folder-form">Cancel</button><button class="button primary" data-action="save-folder">${creating ? "Create" : "Rename"}</button>`,
     );
   }
@@ -2969,7 +3222,7 @@ function renderDialog() {
     const folderOptions = availableFolders.map((folder) => `<option value="${escapeHtml(folder.id)}" ${folder.id === selectedFolderId ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("");
     return dialog(
       "New design",
-      `<p class="dialog-intro">Choose what you’re making. Only Generic can change later.</p><div class="module-picker" role="radiogroup" aria-label="Design type">${moduleChoice("generic", "Generic", "frame", "Free canvas for flyers, social, print, anything.")}${moduleChoice("deck", "Deck", "deck", "Slides with a fixed 16:9 stage.", true)}${moduleChoice("web", "Web", "web", "Responsive routes and sections.")}${moduleChoice("mobile", "Mobile", "mobile", "Phone-sized screens and flows.")}</div><div class="design-fields"><div class="field-row"><label for="design-name">Name</label><input id="design-name" class="field" data-role="design-name" value="Untitled" /></div><div class="field-row"><label for="design-folder">Save in</label><select id="design-folder" class="field" data-role="design-folder"><option value="">All designs</option>${folderOptions}</select></div></div>`,
+      `<p class="dialog-intro">Choose what you’re making. Only Generic can change later.</p><div class="module-picker" role="radiogroup" aria-label="Design type">${moduleChoice("generic", "Generic", "frame", "Free canvas for flyers, social, print, anything.")}${moduleChoice("deck", "Deck", "deck", "Slides with a fixed 16:9 stage.", true)}${moduleChoice("web", "Web", "web", "Responsive routes and sections.")}${moduleChoice("mobile", "Mobile", "mobile", "Phone-sized screens and flows.")}</div><div class="design-fields"><div class="field-row"><label for="design-name">Name</label><input id="design-name" class="field" name="design-name" autocomplete="off" data-role="design-name" value="${escapeHtml(state.dialog.name ?? "Untitled")}" /></div><div class="field-row"><label for="design-folder">Save in</label><select id="design-folder" class="field" name="design-folder" autocomplete="off" data-role="design-folder"><option value="">All designs · ${state.folders.length} folders</option>${folderOptions}</select></div></div>`,
       `<button class="button" data-action="cancel-new-design">Cancel</button><button class="button primary" data-action="create-design">${icon("plus")}Create deck</button>`,
     );
   }
@@ -3014,7 +3267,7 @@ function renderDialog() {
 function renderShareInvite() {
   const owner = state.currentProfile ? { ...state.currentProfile, isOwner: true, isCurrentUser: true } : null;
   const people = [owner, ...state.grants].filter(Boolean);
-  return `<div class="share-dialog-body"><div class="share-form"><div class="share-email-control">${icon("mail")}<input data-role="share-email" type="email" placeholder="Email address" aria-label="Collaborator email" /></div><button class="button primary" data-action="grant">Invite</button></div><div class="share-people"><div class="share-people-heading"><strong>People with access</strong><span>${people.length + 1}</span></div>${people.map(sharePersonRow).join("")}<div class="share-person-row"><span class="avatar avatar-fallback share-agent-avatar">A</span><div class="share-person-copy"><strong>Agent</strong><span>Penkra Agent · works in this Thread</span></div></div></div></div>`;
+  return `<div class="share-dialog-body"><div class="share-form"><div class="share-email-control">${icon("mail")}<input data-role="share-email" name="collaborator-email" autocomplete="email" spellcheck="false" type="email" placeholder="name@example.com…" aria-label="Collaborator email" /></div><button class="button primary" data-action="grant">Invite</button></div><div class="share-people"><div class="share-people-heading"><strong>People with access</strong><span>${people.length + 1}</span></div>${people.map(sharePersonRow).join("")}<div class="share-person-row"><span class="avatar avatar-fallback share-agent-avatar">A</span><div class="share-person-copy"><strong>Agent</strong><span>Penkra Agent · works in this Thread</span></div></div></div></div>`;
 }
 
 function sharePersonRow(person) {
@@ -3025,6 +3278,35 @@ function sharePersonRow(person) {
 }
 
 function bindFolderDialogs() {
+  root.querySelector('[data-action="save-document-name"]')?.addEventListener("click", () => void act(async () => {
+    const name = root.querySelector('[data-role="document-name"]')?.value.trim();
+    if (!name) return;
+    const { documentId } = state.dialog;
+    await api.renameDocument(documentId, name);
+    const document = [...state.documents, ...state.folderDocuments].find((item) => item.id === documentId);
+    if (document) upsertDocumentSummary({ ...document, title: name });
+    state.dialog = null;
+    setToast("Document renamed.");
+    render();
+  }));
+  root.querySelector('[data-action="confirm-move-designs"]')?.addEventListener("click", () => void act(async () => {
+    const folderId = state.dialog.folderId;
+    const selected = [...root.querySelectorAll('[data-role="move-design-checkbox"]:checked')].map((input) => input.value);
+    if (!selected.length) return;
+    const originals = new Map(state.documents.map((document) => [document.id, document.folderId]));
+    state.dialog = null;
+    render();
+    const moved = await Promise.all(selected.map((documentId) => api.moveDocument(documentId, folderId)));
+    for (const document of moved) upsertDocumentSummary(document, originals.get(document.id));
+    await refreshFolderCollection(folderId);
+    setToast(`Moved ${moved.length} design${moved.length === 1 ? "" : "s"}.`);
+    render();
+  }));
+  root.querySelector('[data-action="open-export-design"]')?.addEventListener("click", () => {
+    const documentId = state.dialog.documentId;
+    state.dialog = null;
+    void navigateToDocument(documentId).then(() => setToast("Ask the Agent to export this design with the required format and destination."));
+  });
   root.querySelectorAll('[data-role="design-module"]').forEach((control) => control.addEventListener("change", () => {
     const create = root.querySelector('[data-action="create-design"]');
     if (create) create.innerHTML = `${icon("plus")}Create ${moduleLabel(control.value).toLowerCase()}`;
@@ -3053,8 +3335,8 @@ function bindFolderDialogs() {
       upsertFolderSummary(folder);
       upsertDocumentSummary(movedDocument, form.document.folderId);
     } else {
-      const folder = form.mode === "create"
-        ? await api.createFolder(name, state.route === "folder" ? state.currentFolder?.id ?? null : null)
+      const folder = form.mode === "create" || form.mode === "create-child"
+        ? await api.createFolder(name, form.mode === "create-child" ? form.parentId : state.route === "folder" ? state.currentFolder?.id ?? null : null)
         : await api.updateFolder(form.folderId, { name });
       upsertFolderSummary(folder);
     }
@@ -3180,13 +3462,16 @@ function focusRequestedControl() {
 }
 
 function trapDialogFocus(event) {
-  const dialogElement = root.querySelector('[role="dialog"]');
-  if (!dialogElement) return;
-  const controls = [...dialogElement.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
+  trapFocusWithin(event, root.querySelector('[role="dialog"]'));
+}
+
+function trapFocusWithin(event, container) {
+  if (!container) return;
+  const controls = [...container.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
   if (controls.length === 0) return;
   const first = controls[0];
   const last = controls.at(-1);
-  if (!dialogElement.contains(document.activeElement)) {
+  if (!container.contains(document.activeElement)) {
     event.preventDefault();
     (event.shiftKey ? last : first).focus();
   } else if (event.shiftKey && document.activeElement === first) {
