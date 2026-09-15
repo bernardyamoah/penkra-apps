@@ -47976,6 +47976,8 @@ class FontManager {
   blockedNodeIds = new Set;
   fontProvider = null;
   fontProviders = new Set;
+  fontProviderFaceGenerations = new WeakMap;
+  faceGeneration = 0;
   registrationGeneration = 0;
   providerRegistrations = new WeakMap;
   localFonts = null;
@@ -47988,10 +47990,12 @@ class FontManager {
   cjkFallbackPromise = null;
   arabicFallbackFamilies = [];
   arabicFallbackPromise = null;
+  inFlightLocalFaces = new Map;
   attachProvider(_canvasKit, provider) {
     this.fontProviders.add(provider);
     this.fontProvider = provider;
     this.providerRegistrations.set(provider, new Map);
+    this.fontProviderFaceGenerations.set(provider, this.faceGeneration);
     this.registrationGeneration++;
     for (const [cacheKey, data] of this.loadedFamilies) {
       const separator = cacheKey.indexOf("|");
@@ -48007,16 +48011,23 @@ class FontManager {
       this.fontProviders.clear();
       this.fontProvider = null;
       this.providerRegistrations = new WeakMap;
+      this.fontProviderFaceGenerations = new WeakMap;
       return;
     }
     this.fontProviders.delete(provider);
     this.providerRegistrations.delete(provider);
+    this.fontProviderFaceGenerations.delete(provider);
     if (this.fontProvider === provider) {
       this.fontProvider = Array.from(this.fontProviders).at(-1) ?? null;
     }
   }
   provider() {
-    return this.fontProvider;
+    if (this.fontProvider && this.isProviderCurrent(this.fontProvider))
+      return this.fontProvider;
+    return Array.from(this.fontProviders).findLast((provider) => this.isProviderCurrent(provider)) ?? null;
+  }
+  isProviderCurrent(provider) {
+    return this.fontProviderFaceGenerations.get(provider) === this.faceGeneration;
   }
   generation() {
     return this.registrationGeneration;
@@ -48138,6 +48149,19 @@ class FontManager {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   }
   async loadLocalFont(family, style = "Regular") {
+    const key = `${family}|${style}`;
+    const inFlight = this.inFlightLocalFaces.get(key);
+    if (inFlight)
+      return inFlight;
+    let shared;
+    shared = this.loadLocalFontFromSources(family, style).finally(() => {
+      if (this.inFlightLocalFaces.get(key) === shared)
+        this.inFlightLocalFaces.delete(key);
+    });
+    this.inFlightLocalFaces.set(key, shared);
+    return shared;
+  }
+  async loadLocalFontFromSources(family, style) {
     const cacheKey = `${family}|${style}`;
     const loaded = this.loadedFamilies.get(cacheKey);
     if (loaded) {
@@ -48360,8 +48384,11 @@ class FontManager {
       this.registerFontInCanvasKit(family, buffer);
       return buffer;
     }
-    if (existing)
-      this.registerSupplemental(family, style, existing);
+    if (existing) {
+      this.supplementalFamilyData.delete(key);
+      this.faceGeneration++;
+      this.registrationGeneration++;
+    }
     this.loadedFamilies.set(key, buffer);
     this.registerFontInCanvasKit(family, buffer);
     this.registerFontInBrowser(family, style, buffer);
@@ -48370,6 +48397,8 @@ class FontManager {
   registerFontInCanvasKit(family, data) {
     let registered = false;
     for (const provider of this.fontProviders) {
+      if (!this.isProviderCurrent(provider))
+        continue;
       registered = this.registerFontInProvider(provider, family, data) || registered;
     }
     return registered;
@@ -54109,6 +54138,43 @@ function getTextMeasurer() {
 function setTextMeasurer(measurer) {
   globalTextMeasurer = measurer;
 }
+function createLayoutPassTextMeasurer(measurer) {
+  const measurements = new Map;
+  return (node, maxWidth) => {
+    const key = JSON.stringify([
+      maxWidth === undefined ? ["undefined"] : ["number", maxWidth],
+      node.text,
+      node.textAutoResize,
+      node.width,
+      node.height,
+      node.fontSize,
+      node.fontFamily,
+      node.fontWeight,
+      node.italic,
+      node.fontVariations,
+      node.fontFeatures,
+      node.textAlignHorizontal,
+      node.textDirection,
+      node.textLanguage,
+      node.leadingTrim,
+      node.lineHeight,
+      node.letterSpacing,
+      node.textDecoration,
+      node.textDecorationStyle,
+      node.textDecorationThickness,
+      node.textDecorationFills,
+      node.textCase,
+      node.textTruncation,
+      node.maxLines,
+      node.styleRuns
+    ]);
+    if (measurements.has(key))
+      return measurements.get(key) ?? null;
+    const result = measurer(node, maxWidth);
+    measurements.set(key, result);
+    return result;
+  };
+}
 var globalTextMeasurer = null, GLYPH_WIDTH_FACTOR = 0.6;
 var init_text_measurement = __esm(() => {
   init_fonts();
@@ -54479,6 +54545,7 @@ var exports_layout = {};
 __export(exports_layout, {
   computeAllLayouts: () => computeAllLayouts,
   computeLayout: () => computeLayout,
+  createLayoutPassTextMeasurer: () => createLayoutPassTextMeasurer,
   estimateTextSize: () => estimateTextSize,
   getTextMeasurer: () => getTextMeasurer,
   setTextMeasurer: () => setTextMeasurer
@@ -54500,11 +54567,18 @@ function resolveComputedLayoutDirection(graph, node) {
   return resolveNodeLayoutDirection(node, inheritedDirection);
 }
 function computeAllLayouts(graph, scopeId) {
-  const rootId = scopeId ?? graph.rootId;
-  const visited = new Set;
-  computeLayoutsBottomUp(graph, rootId, visited);
-  if (applyEffectiveGeneratedTextLayout(graph, rootId)) {
+  const measurer = getTextMeasurer();
+  if (measurer)
+    setTextMeasurer(createLayoutPassTextMeasurer(measurer));
+  try {
+    const rootId = scopeId ?? graph.rootId;
     computeLayoutsBottomUp(graph, rootId, new Set);
+    if (applyEffectiveGeneratedTextLayout(graph, rootId)) {
+      computeLayoutsBottomUp(graph, rootId, new Set);
+    }
+  } finally {
+    if (measurer)
+      setTextMeasurer(measurer);
   }
 }
 function computeLayoutsBottomUp(graph, nodeId, visited) {
@@ -65936,7 +66010,21 @@ function settleFontDemand(r4, snapshot, nodeIds) {
   }
 }
 function getFontProvider(r4) {
+  ensureFontProviderCurrent(r4);
   return r4.isDestroyed() || !r4.fontProvider ? null : r4.fontProvider;
+}
+function ensureFontProviderCurrent(r4) {
+  if (r4.isDestroyed() || r4.fontProvider && fontManager.isProviderCurrent(r4.fontProvider))
+    return;
+  const previous = r4.fontProvider;
+  if (previous) {
+    fontManager.detachProvider(previous);
+    previous.delete();
+  }
+  r4.fontProvider = r4.ck.TypefaceFontProvider.Make();
+  fontManager.attachProvider(r4.ck, r4.fontProvider);
+  syncFontGeneration(r4);
+  r4.invalidateAllPictures();
 }
 async function loadFonts(r4, onFallbackFontsLoaded) {
   if (r4.isDestroyed())
@@ -65944,6 +66032,7 @@ async function loadFonts(r4, onFallbackFontsLoaded) {
   r4.onFontResolutionSettled = (snapshot, nodeIds) => {
     if (r4.isDestroyed())
       return;
+    ensureFontProviderCurrent(r4);
     settleFontDemand(r4, snapshot, nodeIds);
     onFallbackFontsLoaded?.();
   };
@@ -65971,6 +66060,7 @@ async function loadFonts(r4, onFallbackFontsLoaded) {
     }
     r4.fontMgr = r4.ck.FontMgr.FromData(fontData) ?? null;
   }
+  ensureFontProviderCurrent(r4);
   r4.fontsLoaded = true;
   syncFontGeneration(r4);
   r4.invalidateAllPictures();
@@ -65980,6 +66070,7 @@ async function loadGraphFonts(r4, graph, nodeIds) {
   const requirements = collectGraphFontRequirements(graph, nodeIds);
   await Promise.all(fontKeys.map(([family, style]) => fontManager.loadFont(family, style, requirements.characters)));
   await fontManager.ensureFallbackPack(missingGraphFontScripts(requirements), requirements.characters);
+  ensureFontProviderCurrent(r4);
   syncFontGeneration(r4);
   r4.invalidateAllPictures();
 }
@@ -70468,18 +70559,22 @@ class SkiaRenderer {
     }
   }
   measureTextNode(node, maxWidth) {
+    ensureFontProviderCurrent(this);
     return measureTextNode(this, node, maxWidth);
   }
   nodeFontReadiness(node) {
+    ensureFontProviderCurrent(this);
     return nodeFontReadiness(this, node);
   }
   isNodeFontLoaded(node) {
     return this.nodeFontReadiness(node) === "ready";
   }
   buildTextPicture(node) {
+    ensureFontProviderCurrent(this);
     return buildTextPicture(this, node);
   }
   buildParagraph(node, color, opts) {
+    ensureFontProviderCurrent(this);
     return buildParagraph(this, node, color, opts);
   }
   resolveFillColorInfo(fill3, fillIndex, node, graph) {
@@ -91415,6 +91510,39 @@ var EDITOR_KEY = Symbol("open-pencil-editor");
 function provideEditor(editor) {
   provide2(EDITOR_KEY, editor);
 }
+function recomputeDerivedGraphLayout(graph) {
+  graph.runPreviewUpdates(() => {
+    for (const page of graph.getPages())
+      computeAllLayouts(graph, page.id);
+  });
+}
+function createFontLayoutScheduler(options) {
+  let initializationComplete = false;
+  let queued = false;
+  const schedule = options.schedule ?? queueMicrotask;
+  function fontResolutionSettled() {
+    if (!initializationComplete)
+      return;
+    if (!options.recomputeLayoutAfterFonts) {
+      options.renderNow();
+      return;
+    }
+    if (queued)
+      return;
+    queued = true;
+    schedule(() => {
+      queued = false;
+      options.recomputeLayout();
+      options.requestRender();
+    });
+  }
+  return {
+    finishInitialization() {
+      initializationComplete = true;
+    },
+    fontResolutionSettled
+  };
+}
 function sizeCanvas(canvas, editor) {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = canvas.clientWidth * dpr;
@@ -91677,30 +91805,27 @@ function createCanvasSurfaceManager({ editor, canvasRef, options, getCanvasKit: 
   };
 }
 function useCanvasSurfaceLifecycle({ canvasRef, surface, setCanvasKit, getCanvasKitValue, lifecycle, editor, options, onReady }) {
-  let fontLayoutQueued = false;
   function graphRootIds() {
     return editor.graph.getPages().flatMap((page) => editor.graph.getChildren(page.id).map((node) => node.id));
   }
   function recomputeGraphLayout() {
-    for (const page of editor.graph.getPages())
-      computeAllLayouts(editor.graph, page.id);
+    recomputeDerivedGraphLayout(editor.graph);
   }
-  function settleResolvedFontLayout() {
-    if (options?.recomputeLayoutAfterFonts === false) {
-      surface.renderNow();
-      return;
+  const fontLayoutScheduler = createFontLayoutScheduler({
+    recomputeLayoutAfterFonts: options?.recomputeLayoutAfterFonts !== false,
+    recomputeLayout: () => {
+      if (!lifecycle.destroyed)
+        recomputeGraphLayout();
+    },
+    requestRender: () => {
+      if (!lifecycle.destroyed)
+        editor.requestRender();
+    },
+    renderNow: () => {
+      if (!lifecycle.destroyed)
+        surface.renderNow();
     }
-    if (fontLayoutQueued)
-      return;
-    fontLayoutQueued = true;
-    queueMicrotask(() => {
-      fontLayoutQueued = false;
-      if (lifecycle.destroyed)
-        return;
-      recomputeGraphLayout();
-      editor.requestRender();
-    });
-  }
+  });
   useCanvasKitLoader({
     canvasRef,
     lifecycle,
@@ -91709,13 +91834,14 @@ function useCanvasSurfaceLifecycle({ canvasRef, surface, setCanvasKit, getCanvas
     loadFonts: async () => {
       const fontsStartedAt = performance.now();
       const renderer = surface.getRenderer();
-      await renderer?.loadFonts(settleResolvedFontLayout);
+      await renderer?.loadFonts(fontLayoutScheduler.fontResolutionSettled);
       if (options?.recomputeLayoutAfterFonts !== false)
         await renderer?.loadGraphFonts(editor.graph, graphRootIds());
       options?.onPerformance?.("engine.fonts", performance.now() - fontsStartedAt, { graphNodes: editor.graph.nodes.size });
       const layoutStartedAt = performance.now();
       if (options?.recomputeLayoutAfterFonts !== false)
         recomputeGraphLayout();
+      fontLayoutScheduler.finishInitialization();
       options?.onPerformance?.("engine.font-layout", performance.now() - layoutStartedAt, {
         graphNodes: editor.graph.nodes.size,
         skipped: options?.recomputeLayoutAfterFonts === false

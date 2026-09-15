@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { computeAllLayouts } from "../vendor/open-pencil/engine.source.mjs";
+import { computeAllLayouts, fontManager } from "../vendor/open-pencil/engine.source.mjs";
 import { computeDescendantVisualBounds } from "../vendor/open-pencil/engine.source.mjs";
 
 import {
@@ -22,6 +22,62 @@ import {
   sceneUpdateToMutations,
 } from "./openpencil-engine.mjs";
 import { prepareOpenPencilRenderDocument } from "./openpencil-render-document.mjs";
+
+test("a cumulative remote-font subset retires providers holding the earlier face", () => {
+  const family = `Canvas cumulative subset ${Date.now()}`;
+  const first = new ArrayBuffer(8);
+  const cumulative = new ArrayBuffer(12);
+  const firstRegistrations = [];
+  const firstProvider = {
+    registerFont(bytes, registeredFamily) {
+      firstRegistrations.push({ bytes, family: registeredFamily });
+    },
+  };
+  const replacementRegistrations = [];
+  const replacementProvider = {
+    registerFont(bytes, registeredFamily) {
+      replacementRegistrations.push({ bytes, family: registeredFamily });
+    },
+  };
+
+  fontManager.attachProvider({}, firstProvider);
+  try {
+    fontManager.markLoaded(family, "Regular", first);
+    fontManager.markLoaded(family, "Regular", cumulative);
+
+    assert.equal(fontManager.isProviderCurrent(firstProvider), false);
+    assert.deepEqual(firstRegistrations, [{ bytes: first, family }]);
+
+    fontManager.attachProvider({}, replacementProvider);
+    assert.equal(fontManager.isProviderCurrent(replacementProvider), true);
+    assert.deepEqual(replacementRegistrations, [{ bytes: cumulative, family }]);
+  } finally {
+    fontManager.detachProvider(firstProvider);
+    fontManager.detachProvider(replacementProvider);
+  }
+});
+
+test("renderer and resolver requests for one font face share the in-flight source load", async () => {
+  const family = `Canvas concurrent font ${Date.now()}`;
+  const fontData = new ArrayBuffer(16);
+  let release;
+  let loads = 0;
+  fontManager.setHostFontLoader(async (requestedFamily) => {
+    if (requestedFamily !== family) return null;
+    loads += 1;
+    await new Promise((resolve) => { release = resolve; });
+    return fontData;
+  });
+  try {
+    const first = fontManager.loadFont(family, "Regular");
+    const second = fontManager.loadLocalFont(family, "Regular");
+    assert.equal(loads, 1);
+    release();
+    assert.deepEqual(await Promise.all([first, second]), [fontData, fontData]);
+  } finally {
+    fontManager.setHostFontLoader(null);
+  }
+});
 
 test("references inherit root paint from ordinary Canvas frames without a legacy reusable flag", () => {
   const graph = createOpenPencilGraph({ children: [
