@@ -43,6 +43,15 @@ const builds = await Promise.all([
     plugins: [dedupeYjsPlugin],
   }),
   Bun.build({
+    entrypoints: [new URL("src/legacy-offline-cache-worker.mjs", root).pathname],
+    outdir: output.pathname,
+    target: "browser",
+    format: "esm",
+    naming: "legacy-offline-cache-worker.js",
+    minify: true,
+    plugins: [dedupeYjsPlugin],
+  }),
+  Bun.build({
     entrypoints: [new URL("src/operations.mjs", root).pathname],
     outdir: output.pathname,
     target: "node",
@@ -173,6 +182,7 @@ const buildInfo = {
 };
 for (const file of [
   "app.js",
+  "legacy-offline-cache-worker.js",
   "operations.js",
   "document-inspection.js",
   "document-screenshot.js",

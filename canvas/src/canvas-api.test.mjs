@@ -167,6 +167,38 @@ test("Canvas snapshots use one direct Account-data request when the exact body f
   });
 });
 
+test("Canvas uses multipart snapshots when the direct state field exceeds its contract", async () => {
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input);
+        if (input.path.endsWith("/snapshot-uploads")) {
+          return response(201, { uploadId: "upload-id", chunkSize: 32 * 1024 * 1024 });
+        }
+        if (input.path.endsWith("/parts")) return response(201, { receivedBytes: 1 });
+        if (input.path.endsWith("/complete")) return response(201, { throughSequence: 9 });
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  await api.createSnapshot("document-id", {
+    throughSequence: 9,
+    state: "A".repeat(11_200_004),
+    source: { version: "2.15", children: [] },
+  });
+
+  assert.equal(calls[0].path, "/projects/document-id/snapshot-uploads");
+  assert.deepEqual(
+    calls.filter((call) => call.path.endsWith("/parts"))
+      .map((call) => JSON.parse(new TextDecoder().decode(call.body)).kind),
+    ["projection", "state"],
+  );
+  assert.equal(calls.at(-1).path, "/projects/snapshot-uploads/upload-id/complete");
+});
+
 test("Canvas requests global image generation inside its document namespace", async () => {
   const calls = [];
   const api = createCanvasApi({
@@ -338,6 +370,31 @@ test("Canvas accepts an automatically inlined snapshot without range requests", 
     "/projects/project-id/blobs",
     "/projects/project-id?chunked=auto",
   ]);
+});
+
+test("Canvas requests only project updates after its catch-up watermark", async () => {
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input);
+        return response(200, {
+          requiresSnapshot: false,
+          snapshotThroughSequence: 7,
+          latestSequence: 11,
+          hasMore: false,
+          updates: [{ sequence: 11, update: "AQ==" }],
+        });
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const result = await api.listUpdates("project/id", 9);
+
+  assert.equal(calls[0].path, "/projects/project%2Fid/updates?afterSequence=9");
+  assert.equal(calls[0].method, "GET");
+  assert.equal(result.latestSequence, 11);
 });
 
 test("Canvas starts the document and asset-manifest reads together", async () => {

@@ -411,6 +411,17 @@ Without a visitor, `Get` returns immutable contexts. Each contains a cloned `nod
 or `null`, sibling `index`, slash-separated `path`, resolved `bounds`, and reported `problems`.
 With a visitor, Canvas invokes it once per match and returns the match count.
 
+`bounds` is the node's resolved absolute rectangle after component instances and layout have been
+evaluated: `{ x, y, width, height }`. It is useful for answering concrete geometry questions such as
+whether two items align, how large a frame renders, or whether a child extends outside a clipping
+ancestor.
+
+`problems` contains deterministic issues Canvas can establish for that exact node: unresolved or
+unsupported render data, missing text content or fill, and content extending beyond an ancestor that
+clips it. An empty array does not mean that a design is attractive, legible, well composed, free of
+unwanted overlap, or faithful to the brief. Those judgments require `TakeScreenshot` and visual
+review.
+
 ```js
 const [frame] = Get("#selected-frame");
 Print({ node: frame.node, bounds: frame.bounds, problems: frame.problems });

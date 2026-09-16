@@ -4,6 +4,10 @@ import { base64ToBytes, bytesToBase64, decodeJson, encodeJson } from "./codec.mj
 // the direct snapshot endpoint whenever the exact encoded request fits; the
 // multipart transfer remains the lossless path for larger valid snapshots.
 const ACCOUNT_DATA_MAX_REQUEST_BYTES = 24 * 1024 * 1024;
+// The direct snapshot endpoint validates the base64 state field at this bound.
+// Larger valid snapshots must use the byte-oriented multipart endpoint even
+// when their complete JSON request would still fit through the host bridge.
+const DIRECT_SNAPSHOT_STATE_MAX_CHARACTERS = 11_200_000;
 
 export function createCanvasApi(runtime = globalThis.penkra) {
   if (!runtime?.account) throw new Error("Canvas requires Penkra Account data support.");
@@ -24,6 +28,8 @@ export function createCanvasApi(runtime = globalThis.penkra) {
       const error = new Error(`${message} (${response.status}; ${options.method ?? "GET"} /projects${path}).`);
       error.code = value?.code ?? "CANVAS_REQUEST_FAILED";
       error.status = response.status;
+      error.requestId = value?.requestId ?? response.headers?.["x-request-id"] ?? null;
+      error.details = value?.details ?? null;
       throw error;
     }
     return value;
@@ -113,11 +119,16 @@ export function createCanvasApi(runtime = globalThis.penkra) {
     writeThumbnail: (id, sourceSequence, png) => request(`/${encodeURIComponent(id)}/thumbnail`, { method: "PUT", body: { sourceSequence, png } }),
     appendUpdate: (id, input) =>
       request(`/${encodeURIComponent(id)}/updates`, { method: "POST", body: input }),
+    listUpdates: (id, afterSequence) => {
+      const params = new URLSearchParams({ afterSequence: String(afterSequence) });
+      return request(`/${encodeURIComponent(id)}/updates?${params}`);
+    },
     undoOperation: (id, input) =>
       request(`/${encodeURIComponent(id)}/undo`, { method: "POST", body: input }),
     createSnapshot: (id, { source, state, ...input }) => {
       const snapshot = { ...input, state, projection: source };
-      return encodeJson(snapshot).byteLength <= ACCOUNT_DATA_MAX_REQUEST_BYTES
+      return state.length <= DIRECT_SNAPSHOT_STATE_MAX_CHARACTERS
+        && encodeJson(snapshot).byteLength <= ACCOUNT_DATA_MAX_REQUEST_BYTES
         ? request(`/${encodeURIComponent(id)}/snapshots`, { method: "POST", body: snapshot })
         : uploadSnapshot(request, id, {
           ...input,

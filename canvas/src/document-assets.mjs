@@ -2,6 +2,7 @@ export async function hydrateDocumentAssets(api, documentId, descriptors = [], c
   const assets = current;
   const rasterizeSvg = dependencies.rasterizeSvg;
   let changed = false;
+  const failures = [];
   const retainedPaths = new Set(descriptors.map((descriptor) => descriptor.path));
   for (const path of assets.keys()) {
     if (retainedPaths.has(path)) continue;
@@ -15,11 +16,15 @@ export async function hydrateDocumentAssets(api, documentId, descriptors = [], c
       && existing.sha256 === descriptor.sha256
       && Number(existing.size ?? existing.bytes.byteLength) === Number(descriptor.size)
     ) return;
-    const bytes = await api.readAsset(documentId, descriptor);
-    assets.set(descriptor.path, await prepareAssetForRendering({ ...descriptor, bytes }, rasterizeSvg));
-    changed = true;
+    try {
+      const bytes = await api.readAsset(documentId, descriptor);
+      assets.set(descriptor.path, await prepareAssetForRendering({ ...descriptor, bytes }, rasterizeSvg));
+      changed = true;
+    } catch (error) {
+      failures.push({ descriptor, error });
+    }
   }));
-  return { assets, changed };
+  return { assets, changed, failures };
 }
 
 export function isSvgAsset(asset) {

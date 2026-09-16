@@ -138,6 +138,34 @@ export function reconcileDocumentPayload(model, payload, lastSequence = 0) {
   return nextSequence;
 }
 
+export function applyIncrementalDocumentPayload(
+  model,
+  payload,
+  { lastSequence = 0, lastCatchUpSequence = 0 } = {},
+) {
+  if (payload.requiresSnapshot) {
+    return { requiresSnapshot: true, changed: false, lastSequence, lastCatchUpSequence };
+  }
+  let changed = false;
+  let nextSequence = Number(lastSequence) || 0;
+  for (const update of [...(payload.updates ?? [])].sort(
+    (left, right) => Number(left.sequence ?? 0) - Number(right.sequence ?? 0),
+  )) {
+    if (!update.update) continue;
+    changed = applyRemoteUpdate(model, update.update) || changed;
+    nextSequence = Math.max(nextSequence, Number(update.sequence ?? 0));
+  }
+  return {
+    requiresSnapshot: false,
+    changed,
+    lastSequence: nextSequence,
+    lastCatchUpSequence: Math.max(
+      Number(lastCatchUpSequence) || 0,
+      Number(payload.latestSequence) || 0,
+    ),
+  };
+}
+
 export function materialize(model) {
   return materializePen(model);
 }

@@ -5,9 +5,12 @@ import { createBlankDocumentSource } from "./blank-document.mjs";
 import { createDocumentCollectionLifecycle } from "./document-collection-lifecycle.mjs";
 import { createDocumentAssetCache } from "./document-asset-cache.mjs";
 import { hasUnloadedDocumentImages, hydrateDocumentAssets } from "./document-assets.mjs";
-import { IndexeddbPersistence } from "y-indexeddb";
+import { migrateLegacyOfflineCache } from "./legacy-offline-cache.mjs";
+import { createPendingUpdateQueue } from "./pending-update-queue.mjs";
+import { createSnapshotMaintenance } from "./snapshot-maintenance.mjs";
 import { createRouteCoordinator } from "./route-coordinator.mjs";
 import { activateLibraryTab } from "./library-navigation.mjs";
+import { runCurrentBackgroundTasks } from "./current-background-tasks.mjs";
 import { trashSummary } from "./trash-summary.mjs";
 import { createVisibleDocumentRestore } from "./visible-document-restore.mjs";
 import {
@@ -69,6 +72,7 @@ import {
   REMOTE_ORIGIN,
   Y,
   applyRemoteUpdate,
+  applyIncrementalDocumentPayload,
   createDocumentModel,
   createUndoManager,
   encodeState,
@@ -90,6 +94,7 @@ const documentCollectionLifecycle = createDocumentCollectionLifecycle({
 });
 const performanceMonitor = createPerformanceMonitor();
 const documentAssetCache = createDocumentAssetCache(2);
+const pendingUpdateQueue = createPendingUpdateQueue();
 configureCanvasFonts(runtime, { performanceMonitor });
 const state = {
   route: "library",
@@ -103,6 +108,7 @@ const state = {
   folderDocuments: [],
   folderChildren: [],
   libraryLoaded: false,
+  libraryActive: false,
   libraryFolderRefresh: null,
   folderCollections: new Map(),
   folderRefreshes: new Map(),
@@ -150,13 +156,15 @@ const state = {
   folderUnsubscribe: null,
   updateListener: null,
   lastSequence: 0,
+  lastCatchUpSequence: 0,
+  catchUpAfterOpen: false,
   updatesSinceSnapshot: 0,
+  deferredSnapshotUpdates: 0,
   flushing: false,
   reconciling: null,
   pendingUpdates: [],
   localUpdateSequences: new Map(),
   incrementalEngineUpdate: false,
-  persistence: null,
   undo: null,
   fieldDrafts: new Map(),
   fieldErrors: new Map(),
@@ -185,6 +193,65 @@ const state = {
   inspectorTab: "design",
   documentOpenStartedAt: null,
 };
+
+const snapshotMaintenance = createSnapshotMaintenance({
+  canRun: (documentId) => (
+    state.document?.id === documentId
+    && Boolean(state.model)
+    && navigator.onLine
+    && state.pendingUpdates.length === 0
+    && state.updatesSinceSnapshot >= 10
+  ),
+  createPayload: (documentId) => {
+    const throughSequence = state.lastSequence;
+    const coveredUpdates = state.updatesSinceSnapshot;
+    const snapshotState = performanceMonitor.measure(
+      "snapshot.state-encode",
+      () => encodeState(state.model),
+      { documentId, throughSequence },
+    );
+    const source = performanceMonitor.measure(
+      "snapshot.projection",
+      () => currentMaterializedDocument(),
+      { documentId, throughSequence },
+    );
+    performanceMonitor.record("snapshot.payload", 0, {
+      documentId,
+      throughSequence,
+      stateCharacters: snapshotState.length,
+      projectionBytes: new TextEncoder().encode(JSON.stringify(source)).byteLength,
+    });
+    return { throughSequence, coveredUpdates, state: snapshotState, source };
+  },
+  upload: (documentId, payload) => performanceMonitor.measureAsync(
+    "snapshot.upload",
+    () => api.createSnapshot(documentId, {
+      throughSequence: payload.throughSequence,
+      state: payload.state,
+      source: payload.source,
+    }),
+    { documentId, throughSequence: payload.throughSequence },
+  ),
+  onSuccess: (documentId, payload) => {
+    if (state.document?.id !== documentId) return;
+    state.updatesSinceSnapshot = Math.max(
+      0,
+      state.updatesSinceSnapshot - payload.coveredUpdates,
+    );
+  },
+  onFailure: (error, { willRetry }) => {
+    performanceMonitor.record("snapshot.failed", 0, {
+      documentId: state.document?.id ?? null,
+      status: error?.status ?? null,
+      code: error?.code ?? null,
+      requestId: error?.requestId ?? null,
+      willRetry,
+      error: message(error),
+    });
+    console.warn("Canvas could not refresh its maintenance snapshot.", error);
+  },
+  onAccessRemoved: () => handleAccessRemoved(),
+});
 
 const visibleDocumentRestore = createVisibleDocumentRestore({
   openDocument,
@@ -278,6 +345,7 @@ async function bootstrap() {
 }
 
 async function showLibrary() {
+  if (state.route === "library" && state.libraryActive) return;
   visibleDocumentRestore.cancel();
   closeDocument();
   state.currentFolder = null;
@@ -286,6 +354,7 @@ async function showLibrary() {
   state.loading = false;
   state.fatalError = false;
   state.error = null;
+  state.libraryActive = true;
   render();
   startFolderSubscription();
   const folders = refreshLibraryFolders();
@@ -358,6 +427,7 @@ function refreshLibraryFolders() {
     if (state.route === "library" && state.libraryLoaded) render();
   });
   const refresh = Promise.all([roots, recent]).then(() => {
+    if (state.route !== "library" || !state.libraryActive) return;
     void loadFolderGrants([...state.folders, ...state.recentFolders]).then(() => {
       if (state.route === "library") render();
     });
@@ -421,17 +491,24 @@ async function loadEveryFolderPage(options) {
 }
 
 async function loadFolderGrants(folders) {
+  if (state.route !== "library" && state.route !== "folder") return;
   const unique = [...new Map(folders.map((folder) => [folder.id, folder])).values()]
     .filter((folder) => folder.access === "owner" && !state.folderGrants.has(folder.id))
     .slice(0, 20);
-  await Promise.all(unique.map(async (folder) => {
+  const route = state.route;
+  const folderId = state.activeFolderId;
+  const isCurrent = () => state.route === route && state.activeFolderId === folderId;
+  await runCurrentBackgroundTasks(unique, async (folder) => {
+    if (!isCurrent()) return;
     try {
       const grants = await api.listFolderGrants(folder.id);
-      state.folderGrants.set(folder.id, grants.items.filter((grant) => grant.status === "active" && !grant.isCurrentUser));
+      if (isCurrent()) {
+        state.folderGrants.set(folder.id, grants.items.filter((grant) => grant.status === "active" && !grant.isCurrentUser));
+      }
     } catch (error) {
       console.warn(`Canvas could not load collaborators for folder ${folder.id}.`, error);
     }
-  }));
+  }, { concurrency: 2, isCurrent });
 }
 
 function withModule(document) {
@@ -738,6 +815,20 @@ async function openDocument(documentId, isCurrentRequest = () => true) {
       () => ({ error: null }),
       (error) => ({ error }),
     );
+    const cachedAssets = documentAssetCache.take(documentId);
+    const assetHydrationTask = performanceMonitor.measureAsync(
+      "document.assets",
+      async () => {
+        const assetDescriptors = await api.listAssets(documentId);
+        return hydrateDocumentAssets(api, documentId, assetDescriptors, cachedAssets, {
+          rasterizeSvg: rasterizeOpenPencilSvgAsset,
+        });
+      },
+      { documentId },
+    ).then(
+      (value) => ({ value, error: null }),
+      (error) => ({ value: null, error }),
+    );
     const payload = await performanceMonitor.measureAsync(
       "document.fetch",
       () => api.getDocument(documentId, {
@@ -759,18 +850,18 @@ async function openDocument(documentId, isCurrentRequest = () => true) {
       { documentId },
     );
     if (!isCurrentRequest()) return;
-    const cachedAssets = documentAssetCache.take(documentId);
-    state.assets = cachedAssets;
-    const assetHydration = performanceMonitor.measureAsync(
-      "document.assets",
-      async () => {
-        const assetDescriptors = await api.listAssets(documentId);
-        return hydrateDocumentAssets(api, documentId, assetDescriptors, cachedAssets, {
-          rasterizeSvg: rasterizeOpenPencilSvgAsset,
-        });
-      },
-      { documentId },
-    );
+    const assetHydrationResult = await assetHydrationTask;
+    if (assetHydrationResult.error) throw assetHydrationResult.error;
+    const assetHydration = assetHydrationResult.value;
+    if (!isCurrentRequest()) return;
+    documentAssetCache.remember(documentId, assetHydration.assets);
+    state.assets = assetHydration.assets;
+    for (const failure of assetHydration.failures) {
+      console.warn(
+        `Canvas could not load document asset ${failure.descriptor.path}.`,
+        failure.error,
+      );
+    }
     state.document = {
       ...payload,
       module: payload.snapshot?.source?.module
@@ -802,17 +893,27 @@ async function openDocument(documentId, isCurrentRequest = () => true) {
       () => Y.encodeStateVector(state.model.doc),
       { documentId },
     );
-    state.persistence = new IndexeddbPersistence(`penkra-canvas:${documentId}`, state.model.doc);
-    const persistenceSync = performanceMonitor.measureAsync(
-      "document.indexeddb-sync",
-      () => state.persistence.whenSynced,
+    const durablePendingUpdates = await performanceMonitor.measureAsync(
+      "document.pending-updates",
+      () => pendingUpdateQueue.load(documentId),
       { documentId },
     );
+    if (!isCurrentRequest()) return;
+    state.pendingUpdates = durablePendingUpdates.map((item) => ({
+      ...item,
+      persisted: Promise.resolve(true),
+    }));
+    for (const item of durablePendingUpdates) {
+      applyRemoteUpdate(state.model, item.update);
+      state.localUpdateSequences.set(item.clientUpdateId, null);
+    }
     state.undo = createUndoManager(state.model);
     state.lastSequence = Math.max(
       payload.snapshot.throughSequence,
       ...(payload.updates ?? []).map((update) => update.sequence),
     );
+    state.lastCatchUpSequence = state.lastSequence;
+    state.deferredSnapshotUpdates = payload.updates?.length ?? 0;
     state.selectedId = currentDocumentNodes()[0]?.node.id ?? null;
     state.expandedLayerIds.clear();
     state.updateListener = (update, origin) => {
@@ -893,37 +994,11 @@ async function openDocument(documentId, isCurrentRequest = () => true) {
     state.loading = false;
     setSync("saved", "Saved");
     render();
-    void assetHydration.then(({ assets, changed }) => {
-      documentAssetCache.remember(documentId, assets);
-      if (state.document?.id !== documentId || !changed) return;
-      state.assets = assets;
-      invalidateDocumentProjection();
-      state.compatibilityDocument = null;
-      state.engineDocumentDirty = true;
-      state.engineDocumentDirtyReason = "document-assets-loaded";
-      render();
-    }).catch((error) => {
-      if (state.document?.id === documentId) {
-        console.warn("Canvas could not load every document asset.", error);
-      }
-    });
-    void persistenceSync.then(() => {
-      if (state.document?.id !== documentId) return;
-      const offlineUpdate = performanceMonitor.measure(
-        "document.offline-diff",
-        () => Y.encodeStateAsUpdate(state.model.doc, serverStateVector),
-        { documentId },
-      );
-      if (offlineUpdate.byteLength > 2) {
-        queueEncodedUpdate(documentId, encodeUpdate(offlineUpdate));
-        void flushPending();
-      }
-      render();
-    }).catch((error) => {
-      if (state.document?.id === documentId) {
-        console.warn("Canvas could not restore locally cached document changes.", error);
-      }
-    });
+    if (state.catchUpAfterOpen) {
+      state.catchUpAfterOpen = false;
+      void restoreConnectedState(documentId);
+    }
+    void restoreLegacyOfflineChanges(documentId, serverStateVector);
     void subscription.then((unsubscribe) => {
       if (state.document?.id === documentId) state.documentUnsubscribe = unsubscribe;
       else unsubscribe?.();
@@ -979,25 +1054,26 @@ async function openDocument(documentId, isCurrentRequest = () => true) {
 async function loadDocumentThumbnails(documents) {
   const pending = documents.filter((document) =>
     document.thumbnailUpdatedAt && !state.thumbnails.has(document.id));
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
-    for (;;) {
-      const document = pending[next++];
-      if (!document) return;
+  const route = state.route;
+  const folderId = state.activeFolderId;
+  const isCurrent = () => state.route === route && state.activeFolderId === folderId;
+  await runCurrentBackgroundTasks(pending, async (document) => {
+    if (!isCurrent()) return;
       try {
         const result = await api.readThumbnail(document.id);
-        state.thumbnails.set(document.id, `data:image/png;base64,${result.png}`);
+        if (isCurrent()) state.thumbnails.set(document.id, `data:image/png;base64,${result.png}`);
       } catch (error) {
         console.warn("Canvas could not load a saved design thumbnail.", error);
       }
-    }
-  }));
+  }, { concurrency: 2, isCurrent });
 }
 
 function closeDocument() {
   clearTimeout(state.trashSearchTimer);
   state.trashSearchTimer = null;
+  snapshotMaintenance.cancel();
   documentCollectionLifecycle.stop();
+  state.libraryActive = false;
   state.folderUnsubscribe?.();
   state.folderUnsubscribe = null;
   disposeEngineSurface();
@@ -1006,15 +1082,18 @@ function closeDocument() {
   if (state.model && state.updateListener) state.model.doc.off("update", state.updateListener);
   state.updateListener = null;
   state.assets = new Map();
-  state.persistence?.destroy();
   state.undo?.destroy();
   state.model?.doc.destroy();
-  state.persistence = null;
   state.undo = null;
   state.pendingUpdates = [];
   state.localUpdateSequences.clear();
   state.incrementalEngineUpdate = false;
   state.reconciling = null;
+  state.lastSequence = 0;
+  state.lastCatchUpSequence = 0;
+  state.catchUpAfterOpen = false;
+  state.updatesSinceSnapshot = 0;
+  state.deferredSnapshotUpdates = 0;
   state.document = null;
   state.grants = [];
   state.shareTarget = null;
@@ -1082,6 +1161,7 @@ async function reconcileFromServer(documentId) {
       if (state.document?.id !== documentId || state.model !== model) return false;
       const previousSequence = state.lastSequence;
       state.lastSequence = reconcileDocumentPayload(model, payload, state.lastSequence);
+      state.lastCatchUpSequence = state.lastSequence;
       for (const [clientUpdateId, sequence] of state.localUpdateSequences) {
         if (sequence !== null && sequence <= state.lastSequence) {
           state.localUpdateSequences.delete(clientUpdateId);
@@ -1129,16 +1209,101 @@ async function reconcileFromServer(documentId) {
   return task;
 }
 
+async function catchUpFromServer(documentId) {
+  if (state.document?.id !== documentId || !state.model) return false;
+  if (state.reconciling) return state.reconciling;
+  const model = state.model;
+  let task;
+  task = (async () => {
+    try {
+      let changed = false;
+      let hasMore;
+      do {
+        const requestedAfter = state.lastCatchUpSequence;
+        const payload = await performanceMonitor.measureAsync(
+          "document.catch-up",
+          () => api.listUpdates(documentId, requestedAfter),
+          { documentId, afterSequence: requestedAfter },
+        );
+        performanceMonitor.record("document.catch-up-result", 0, {
+          documentId,
+          afterSequence: requestedAfter,
+          updates: payload.updates?.length ?? 0,
+          requiresSnapshot: payload.requiresSnapshot === true,
+          hasMore: payload.hasMore === true,
+        });
+        if (state.document?.id !== documentId || state.model !== model) return false;
+        const result = applyIncrementalDocumentPayload(model, payload, state);
+        if (result.requiresSnapshot) return "snapshot-required";
+        state.lastSequence = result.lastSequence;
+        state.lastCatchUpSequence = result.lastCatchUpSequence;
+        changed = result.changed || changed;
+        hasMore = payload.hasMore === true;
+        if (hasMore && state.lastCatchUpSequence <= requestedAfter) {
+          throw new Error("Canvas catch-up did not advance its update watermark.");
+        }
+      } while (hasMore);
+      for (const [clientUpdateId, sequence] of state.localUpdateSequences) {
+        if (sequence !== null && sequence <= state.lastCatchUpSequence) {
+          state.localUpdateSequences.delete(clientUpdateId);
+        }
+      }
+      if (changed) {
+        state.engineDocumentDirty = true;
+        state.engineDocumentDirtyReason = "server-catch-up";
+        render();
+      }
+      return true;
+    } catch (error) {
+      if (state.document?.id !== documentId || state.model !== model) return false;
+      if (error?.status === 403 || error?.status === 404) {
+        handleAccessRemoved();
+        return false;
+      }
+      if (isTransportFailure(error)) {
+        state.realtimeConnection = realtimeStateAfterSignal(
+          state.realtimeConnection,
+          "request-failure",
+        );
+      }
+      state.presence = null;
+      setSync(
+        navigator.onLine ? "error" : "offline",
+        navigator.onLine ? "Couldn’t sync — retrying" : "Offline — changes stay on this device",
+      );
+      render();
+      setTimeout(() => void restoreConnectedState(documentId), 3_000);
+      return false;
+    }
+  })().finally(() => {
+    if (state.reconciling === task) state.reconciling = null;
+  });
+  state.reconciling = task;
+  return task;
+}
+
 function queueUpdate(documentId, update) {
   if (state.document?.id !== documentId) return;
   queueEncodedUpdate(documentId, encodeUpdate(update));
 }
 
-function queueEncodedUpdate(documentId, update) {
+function queueEncodedUpdate(documentId, update, options = {}) {
   if (state.document?.id !== documentId) return;
-  const clientUpdateId = crypto.randomUUID();
-  state.pendingUpdates.push({ clientUpdateId, update });
+  const clientUpdateId = options.clientUpdateId ?? crypto.randomUUID();
+  const createdAt = Number(options.createdAt ?? Date.now());
+  const persisted = options.persisted
+    ? Promise.resolve(true)
+    : pendingUpdateQueue.enqueue(documentId, { clientUpdateId, update, createdAt }).then(
+      () => true,
+      (error) => {
+        console.error("Canvas could not store an offline-safe copy of a local change.", error);
+        return false;
+      },
+    );
+  const item = { clientUpdateId, update, createdAt, persisted };
+  state.pendingUpdates.push(item);
   state.localUpdateSequences.set(clientUpdateId, null);
+  return item;
 }
 
 async function flushPending() {
@@ -1148,20 +1313,17 @@ async function flushPending() {
   try {
     while (state.pendingUpdates.length > 0) {
       const item = state.pendingUpdates[0];
-      const result = await api.appendUpdate(documentId, item);
+      await item.persisted;
+      const result = await api.appendUpdate(documentId, {
+        clientUpdateId: item.clientUpdateId,
+        update: item.update,
+      });
       state.lastSequence = Math.max(state.lastSequence, Number(result.sequence));
       if (state.localUpdateSequences.has(item.clientUpdateId)) {
         state.localUpdateSequences.set(item.clientUpdateId, Number(result.sequence));
       }
+      await pendingUpdateQueue.acknowledge(documentId, item.clientUpdateId);
       state.pendingUpdates.shift();
-    }
-    if (state.updatesSinceSnapshot >= 10 && state.model) {
-      await api.createSnapshot(documentId, {
-        throughSequence: state.lastSequence,
-        state: encodeState(state.model),
-        source: currentMaterializedDocument(),
-      });
-      state.updatesSinceSnapshot = 0;
     }
     if (state.realtimeConnection === REALTIME_CONNECTED) {
       setSync("saved", "Saved");
@@ -1170,6 +1332,7 @@ async function flushPending() {
       applyDisconnectedState(false);
     }
     scheduleThumbnailUpdate(documentId);
+    void snapshotMaintenance.request(documentId);
   } catch (error) {
     if (error?.status === 403 || error?.status === 404) {
       handleAccessRemoved();
@@ -1193,6 +1356,31 @@ async function flushPending() {
   } finally {
     state.flushing = false;
     renderSyncStatus();
+  }
+}
+
+async function restoreLegacyOfflineChanges(documentId, serverStateVector) {
+  try {
+    if (await pendingUpdateQueue.migrationComplete(documentId)) return;
+    const item = await performanceMonitor.measureAsync(
+      "document.legacy-offline-migration",
+      () => migrateLegacyOfflineCache(documentId, serverStateVector),
+      { documentId },
+    );
+    if (!item || state.document?.id !== documentId || !state.model) return;
+    const changed = applyRemoteUpdate(state.model, item.update);
+    queueEncodedUpdate(documentId, item.update, { ...item, persisted: true });
+    if (changed) {
+      invalidateDocumentProjection();
+      state.engineDocumentDirty = true;
+      state.engineDocumentDirtyReason = "legacy-offline-update";
+      render();
+    }
+    void flushPending();
+  } catch (error) {
+    if (state.document?.id === documentId) {
+      console.warn("Canvas could not migrate its legacy offline changes yet.", error);
+    }
   }
 }
 
@@ -1224,13 +1412,23 @@ async function handleRealtimeConnectionChange(documentId, connectionState) {
     applyDisconnectedState();
     return;
   }
+  if (state.loading) {
+    state.catchUpAfterOpen = true;
+    return;
+  }
   setSync("syncing", "Syncing…");
   render();
   await restoreConnectedState(documentId);
 }
 
 async function restoreConnectedState(documentId) {
-  const reconciled = await reconcileFromServer(documentId);
+  const reconciled = await catchUpFromServer(documentId);
+  if (reconciled === "snapshot-required") {
+    const refreshed = await reconcileFromServer(documentId);
+    if (!refreshed || state.document?.id !== documentId) return;
+    await flushPending();
+    return;
+  }
   if (!reconciled || state.document?.id !== documentId) return;
   await flushPending();
 }
@@ -1724,6 +1922,11 @@ async function mountEditorSurface(generation, documentId) {
             },
           );
           state.documentOpenStartedAt = null;
+        }
+        if (state.deferredSnapshotUpdates > 0) {
+          state.updatesSinceSnapshot += state.deferredSnapshotUpdates;
+          state.deferredSnapshotUpdates = 0;
+          setTimeout(() => void flushPending(), 0);
         }
       },
       onSelection: ([nodeId]) => {

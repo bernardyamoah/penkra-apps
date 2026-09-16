@@ -56,6 +56,10 @@ Agents can also share an owned document with another Penkra Account, inspect cur
 remove access. Sharing grants editor access, notifies nobody, and is only ever done when the user
 asks for it in those terms.
 
+Use a Canvas screenshot to inspect appearance while designing or reviewing. Create an extracted or
+exported file only when the user wants the design delivered in that file format; those operations
+produce artifacts and are not observability tools.
+
 ## Designing well
 
 Start from the user's outcome and the document already in front of them. Preserve approved content,
