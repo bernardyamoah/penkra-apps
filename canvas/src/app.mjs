@@ -1,6 +1,10 @@
 import { createCanvasApi } from "./canvas-api.mjs";
 import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
-import { createFolderForDocument } from "./folder-actions.mjs";
+import {
+  createFolderForDocument,
+  folderCreationParentId,
+  nestedFolderForm,
+} from "./folder-actions.mjs";
 import { createBlankDocumentSource } from "./blank-document.mjs";
 import { createDocumentCollectionLifecycle } from "./document-collection-lifecycle.mjs";
 import { createDocumentAssetCache } from "./document-asset-cache.mjs";
@@ -2304,6 +2308,7 @@ async function openFolderContextMenu(folder) {
   const action = await runtime.contextMenu.show([
     { id: "open", label: "Open" },
     ...(folder.access === "owner" ? [
+      { id: "new-folder", label: "New folder inside" },
       { id: "rename", label: "Rename" },
       { type: "submenu", label: "Move to", items: [
         { id: "move:root", label: "All Designs", enabled: folder.parentId !== null },
@@ -2317,6 +2322,11 @@ async function openFolderContextMenu(folder) {
   ]);
   if (!action) return;
   if (action === "open") return navigateToFolder(folder.id);
+  if (action === "new-folder") {
+    state.dialog = nestedFolderForm(folder);
+    state.dialogFocusSelector = '[data-role="folder-name"]';
+    return render();
+  }
   if (action === "rename") {
     state.dialog = { kind: "folder-form", mode: "rename", folderId: folder.id, name: folder.name };
     state.dialogFocusSelector = '[data-role="folder-name"]';
@@ -3053,8 +3063,11 @@ function bindFolderDialogs() {
       upsertFolderSummary(folder);
       upsertDocumentSummary(movedDocument, form.document.folderId);
     } else {
-      const folder = form.mode === "create"
-        ? await api.createFolder(name, state.route === "folder" ? state.currentFolder?.id ?? null : null)
+      const folder = form.mode === "create" || form.mode === "create-child"
+        ? await api.createFolder(name, folderCreationParentId(form, {
+          route: state.route,
+          currentFolderId: state.currentFolder?.id ?? null,
+        }))
         : await api.updateFolder(form.folderId, { name });
       upsertFolderSummary(folder);
     }

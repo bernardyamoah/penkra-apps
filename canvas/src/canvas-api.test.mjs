@@ -114,6 +114,28 @@ test("Canvas creates a folder and moves its document with one request", async ()
   assert.deepEqual(JSON.parse(new TextDecoder().decode(calls[0].body)), { name: "Campaign" });
 });
 
+test("Canvas sends the selected parent when creating a nested folder", async () => {
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input);
+        return response(201, { id: "child-folder", parentId: "parent-folder" });
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  await api.createFolder("Child folder", "parent-folder");
+
+  assert.equal(calls[0].path, "/projects/folders");
+  assert.equal(calls[0].method, "POST");
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(calls[0].body)), {
+    name: "Child folder",
+    parentId: "parent-folder",
+  });
+});
+
 test("Canvas undo posts the exact operation and optimistic head sequence", async () => {
   const calls = [];
   const api = createCanvasApi({
