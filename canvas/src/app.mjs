@@ -1442,16 +1442,16 @@ function renderFolder() {
   const matches = (value) => !query || value.toLowerCase().includes(query);
   const folders = state.folderChildren.filter((item) => matches(item.name));
   const documents = state.folderDocuments.filter((item) => matches(item.title));
-  const empty = state.folderCollections.has(folder.id) ? emptyLibrary(query) : "";
+  const collectionEmpty = !query && folders.length === 0 && documents.length === 0 && state.folderCollections.has(folder.id);
+  const noResults = query && folders.length === 0 && documents.length === 0 ? emptyLibrary(query) : "";
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${folderTopbar(folder)}</div>
     <div class="folder-content">
     ${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
     <header class="folder-overview">
-      <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folders.length} folder${folders.length === 1 ? "" : "s"} · ${folder.designCount} design${folder.designCount === 1 ? "" : "s"} · Updated ${escapeHtml(relativeTime(folder.updatedAt))}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
+      <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folder.designCount} design${folder.designCount === 1 ? "" : "s"} · Created ${escapeHtml(relativeTime(folder.createdAt ?? folder.updatedAt))}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
     </header>
-    ${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}
-    <section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div>${documents.length ? `<div class="document-grid">${documents.map(documentCard).join("")}</div>` : empty}</section>
+    ${collectionEmpty ? folderEmptyState(folder) : `${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}${documents.length ? `<section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div><div class="document-grid">${documents.map(documentCard).join("")}</div></section>` : noResults}`}
     </div>
   </div></main>${renderDialog()}${renderToast()}`;
 }
@@ -1487,6 +1487,10 @@ function emptyLibrary(query = "") {
   return query
     ? `<section class="empty"><div>${icon("search")}<h2>No results found</h2><p>Try a different name or clear your search.</p></div></section>`
     : `<section class="empty"><div>${icon("file")}<h2>No designs here yet</h2><p>Create a design to get started.</p><button class="button primary" data-action="new">${icon("plus")}New design</button></div></section>`;
+}
+
+function folderEmptyState(folder) {
+  return `<section class="folder-empty" aria-label="Empty ${escapeHtml(folder.name)} folder"><div class="folder-empty-illustration" aria-hidden="true"><i></i><i></i><span>${icon("folder-input")}</span></div><div class="folder-empty-copy"><h2>Nothing in ${escapeHtml(folder.name)} yet</h2><p>Create a design here, or move ones you already have. Designs keep their sharing when they move, and the folder’s people are added on top.</p></div><div class="folder-empty-actions"><button class="button primary" data-action="new">${icon("plus")}New design</button><button class="button" data-action="move-designs-here">${icon("folder-input")}Move designs here</button></div></section>`;
 }
 
 function renderTrash() {
@@ -1582,7 +1586,7 @@ function folderPeopleSummary(folder) {
     .slice(0, 3);
   if (!profiles.length) return "";
   const names = profiles.map((profile, index) => index === 0 && profile === state.currentProfile ? "You" : profile.name?.trim() || profile.email).filter(Boolean);
-  const summary = names.length < 2 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  const summary = names.length < 2 ? (names[0] === "You" ? "Only you" : names[0]) : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
   return `<span class="folder-people-summary">${escapeHtml(summary)}</span>`;
 }
 
@@ -2160,6 +2164,9 @@ function bindLibrary() {
     const folder = state.currentFolder;
     if (folder) void openShare({ type: "folder", id: folder.id, name: folder.name });
   });
+  root.querySelector('[data-action="move-designs-here"]')?.addEventListener("click", () => {
+    if (state.currentFolder) void moveDesignsHere(state.currentFolder);
+  });
   root.querySelector('[data-action="current-folder-menu"]')?.addEventListener("click", () => {
     if (state.currentFolder) void openFolderContextMenu(state.currentFolder);
   });
@@ -2245,6 +2252,28 @@ function bindLibrary() {
     render();
   });
   bindFolderDialogs();
+}
+
+async function moveDesignsHere(folder) {
+  const candidates = state.documents.filter((document) => document.folderId !== folder.id);
+  if (!candidates.length) {
+    setToast("No other designs are available to move.");
+    render();
+    return;
+  }
+  const action = await runtime.contextMenu.show(candidates.map((document) => ({
+    id: `move-document:${document.id}`,
+    label: document.title,
+  })));
+  if (!action?.startsWith("move-document:")) return;
+  const document = candidates.find((item) => item.id === action.slice("move-document:".length));
+  if (!document) return;
+  await act(async () => {
+    const moved = await api.moveDocument(document.id, folder.id);
+    upsertDocumentSummary(moved, document.folderId);
+    setToast(`Moved ${moved.title} to ${folder.name}.`);
+    render();
+  }, { key: "move-design-into-folder", subjectId: document.id, label: "Moving…" });
 }
 
 async function openDocumentContextMenu(document) {
@@ -3318,6 +3347,7 @@ function icon(name) {
     frame: '<path d="M5 5h14v14H5z"/><path d="M3 8h4M17 8h4M8 3v4M8 17v4"/>',
     folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
     "folder-plus": '<path d="M3 7h7l2 2h9v10H3z"/><path d="M12 12v5M9.5 14.5h5"/>',
+    "folder-input": '<path d="M3 6h7l2 2h9v11H3z"/><path d="M12 11v7M9 15l3 3 3-3"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     search: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
     chevron: '<path d="m9 6 6 6-6 6"/>',

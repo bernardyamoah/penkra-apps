@@ -117,18 +117,32 @@ h1, h2, h3, p { margin: 0; }
 .folder-breadcrumb > span .icon { width: 11px; height: 11px; }
 .folder-breadcrumb strong { color: #e1e3e7; font-weight: 600; }
 .folder-overview, .trash-overview { min-height: 106px; display: flex; align-items: center; gap: 16px; margin: 0; padding: 28px 0 22px; }
-.folder-overview-icon { width: 56px; height: 56px; display: grid; flex: none; place-items: center; border: 1px solid #2c2e34; border-radius: 12px; background: #17181c; color: #956cff; }
-.folder-overview-icon .icon { width: 25px; height: 25px; }
-.folder-overview .library-title { min-width: 0; flex: 1; }
+.folder-overview-icon { width: 56px; height: 56px; display: grid; flex: none; place-items: center; border: 1px solid #ffffff12; border-radius: 14px; background: #141414; color: #a78bfa; }
+.folder-overview-icon .icon { width: 26px; height: 26px; }
+.folder-overview .library-title { min-width: 0; flex: 1; gap: 6px; }
+.folder-overview .library-title h1 { font-size: 26px; font-weight: 700; letter-spacing: -.5px; line-height: 1.1; }
+.folder-overview .library-title p, .folder-people-summary { color: #ffffff5c; font-size: 13px; font-weight: 500; line-height: 1.3; }
 .folder-header-actions { display: flex; align-items: center; gap: 8px; }
 .folder-header-actions .button { display: flex; align-items: center; gap: 7px; }
 .folder-detail-line { display: flex; align-items: center; gap: 10px; }
-.folder-people-summary { color: #858a93; font-size: 10px; }
 .folder-people { display: flex; align-items: center; padding-left: 5px; }
 .folder-people .avatar { margin-left: -5px; }
 .folder-name-line { display: flex; align-items: center; gap: 4px; }
 .folder-name-line .icon-button { width: 25px; min-height: 25px; }
 .folder-name-line .icon { width: 13px; height: 13px; }
+.folder-empty { min-height: 560px; display: grid; align-content: center; justify-items: center; gap: 22px; padding-bottom: 48px; text-align: center; }
+.folder-empty-illustration { position: relative; width: 200px; height: 120px; }
+.folder-empty-illustration > i { position: absolute; width: 132px; height: 84px; border: 1px dashed #ffffff24; border-radius: 10px; }
+.folder-empty-illustration > i:first-child { top: 22px; left: 34px; background: #ffffff05; }
+.folder-empty-illustration > i:nth-child(2) { top: 36px; left: 14px; background: #141414; }
+.folder-empty-illustration > span { position: absolute; top: 64px; left: 64px; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; background: #a78bfa1f; color: #a78bfa; }
+.folder-empty-illustration .icon { width: 17px; height: 17px; }
+.folder-empty-copy { display: grid; justify-items: center; gap: 8px; }
+.folder-empty-copy h2 { color: #fff; font-size: 20px; font-weight: 700; letter-spacing: -.3px; line-height: 1.3; }
+.folder-empty-copy p { width: min(460px, 100%); color: #ffffff99; font-size: 13.5px; line-height: 1.5; }
+.folder-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.folder-empty-actions .button { min-height: 36px; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; font-size: 13px; }
+.folder-empty-actions .icon { width: 15px; height: 15px; }
 .nested-folder-card { flex-direction: row; align-items: center; aspect-ratio: auto; height: 90px; }
 .nested-folder-card > span:nth-child(2) { display: grid; gap: 4px; }
 .nested-folder-card .folder-icon { width: 42px; height: 42px; border-radius: 10px; background: #282239; color: #9d72ff; }
