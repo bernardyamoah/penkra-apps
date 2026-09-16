@@ -1619,6 +1619,27 @@ function emptyFolder(folder, query = "") {
   return `<section class="empty folder-empty"><div><span class="empty-folder-art">${icon("folder")}</span><h2>Nothing in ${escapeHtml(folder.name)} yet</h2><p>Create a design here, or move ones you already have. Designs keep their sharing when they move, and the folder’s people are added on top.</p><div class="empty-actions"><button class="button primary" data-action="new">${icon("plus")}New design</button><button class="button" data-action="move-designs-here">${icon("folder-plus")}Move designs here</button></div></div></section>`;
 }
 
+async function openMoveDesignsHere() {
+  const folder = state.currentFolder;
+  if (!folder) return;
+  state.dialog = { kind: "move-designs-here", folderId: folder.id, folderName: folder.name, loading: true };
+  render();
+  try {
+    const documents = await loadEveryDocumentPage(api.listDocuments);
+    if (state.dialog?.kind !== "move-designs-here" || state.dialog.folderId !== folder.id) return;
+    state.documents = documents.map(withModule);
+    persistCollectionCache();
+    state.dialog = { ...state.dialog, loading: false, error: null };
+    state.dialogFocusSelector = '[data-role="move-design-checkbox"]';
+    render();
+  } catch (error) {
+    if (state.dialog?.kind !== "move-designs-here" || state.dialog.folderId !== folder.id) return;
+    state.dialog = { ...state.dialog, loading: false, error: message(error) };
+    state.dialogFocusSelector = '[data-action="retry-move-designs"]';
+    render();
+  }
+}
+
 function folderCollectionSummary(folder, childFolders) {
   const parts = [];
   if (childFolders.length) parts.push(`${childFolders.length} folder${childFolders.length === 1 ? "" : "s"}`);
@@ -2397,11 +2418,7 @@ function bindLibrary() {
     state.dialogFocusSelector = '[data-role="design-name"]';
     render();
   });
-  root.querySelector('[data-action="move-designs-here"]')?.addEventListener("click", () => {
-    state.dialog = { kind: "move-designs-here", folderId: state.currentFolder.id, folderName: state.currentFolder.name };
-    state.dialogFocusSelector = '[data-role="move-design-checkbox"]';
-    render();
-  });
+  root.querySelector('[data-action="move-designs-here"]')?.addEventListener("click", () => void openMoveDesignsHere());
   root.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => {
     void activateLibraryTab(state.route, button.dataset.filter, {
       select: (filter) => { state.libraryFilter = filter; },
@@ -3281,10 +3298,18 @@ function renderDialog() {
   if (state.dialog.kind === "move-designs-here") {
     const candidates = sortCollection(state.documents.filter((document) => document.folderId !== state.dialog.folderId && document.access === "owner"), "name");
     const rows = candidates.map((document) => `<label class="move-design-row"><input type="checkbox" name="move-design" data-role="move-design-checkbox" value="${document.id}" /><span><strong>${escapeHtml(document.title)}</strong><small>${escapeHtml(knownFolder(document.folderId)?.name ?? "Unfiled")}</small></span></label>`).join("");
+    const body = state.dialog.loading
+      ? `<section class="dialog-empty" role="status"><p>Loading designs…</p></section>`
+      : state.dialog.error
+        ? `<section class="dialog-empty"><p class="error-copy">${escapeHtml(state.dialog.error)}</p></section>`
+        : rows ? `<p class="dialog-intro">Select one or more designs. Their sharing settings stay unchanged.</p><div class="move-design-list">${rows}</div>` : `<section class="dialog-empty"><p>Every design is already in this folder.</p></section>`;
+    const action = state.dialog.error
+      ? `<button class="button primary" data-action="retry-move-designs">Try again</button>`
+      : `<button class="button primary" data-action="confirm-move-designs" ${rows && !state.dialog.loading ? "" : "disabled"}>Move selected</button>`;
     return dialog(
       `Move designs to ${state.dialog.folderName}`,
-      rows ? `<p class="dialog-intro">Select one or more designs. Their sharing settings stay unchanged.</p><div class="move-design-list">${rows}</div>` : `<section class="dialog-empty"><p>Every design is already in this folder.</p></section>`,
-      `<button class="button" data-action="close-dialog">Cancel</button><button class="button primary" data-action="confirm-move-designs" ${rows ? "" : "disabled"}>Move selected</button>`,
+      body,
+      `<button class="button" data-action="close-dialog">Cancel</button>${action}`,
     );
   }
   if (state.dialog.kind === "export-handoff") {
@@ -3392,6 +3417,7 @@ function bindFolderDialogs() {
     setToast(`Moved ${moved.length} design${moved.length === 1 ? "" : "s"}.`);
     render();
   }));
+  root.querySelector('[data-action="retry-move-designs"]')?.addEventListener("click", () => void openMoveDesignsHere());
   root.querySelector('[data-action="open-export-design"]')?.addEventListener("click", () => {
     const documentId = state.dialog.documentId;
     state.dialog = null;
