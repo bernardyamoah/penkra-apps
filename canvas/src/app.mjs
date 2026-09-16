@@ -101,6 +101,8 @@ const state = {
   searchGeneration: 0,
   searchTimer: null,
   searchLoading: false,
+  searchTrashGeneration: 0,
+  searchTrashMatchingCount: null,
   collectionView: "grid",
   collectionSort: "updated",
   documents: [],
@@ -652,7 +654,25 @@ function scheduleDocumentSearch() {
   clearTimeout(state.searchTimer);
   const query = state.search.trim().toLocaleLowerCase();
   if (query.length < 2 || state.route === "trash") return;
-  state.searchTimer = setTimeout(() => void indexDocumentsForSearch(query), 250);
+  state.searchTimer = setTimeout(() => {
+    void indexDocumentsForSearch(query);
+    void searchTrashForQuery(query);
+  }, 250);
+}
+
+async function searchTrashForQuery(query) {
+  const generation = ++state.searchTrashGeneration;
+  state.searchTrashMatchingCount = null;
+  try {
+    const result = await api.listTrashItems(null, { query });
+    if (generation !== state.searchTrashGeneration || state.search.trim().toLocaleLowerCase() !== query) return;
+    state.searchTrashMatchingCount = result.matchingCount;
+    render();
+  } catch (error) {
+    if (generation === state.searchTrashGeneration) {
+      console.warn("Canvas could not search Trash.", error);
+    }
+  }
 }
 
 async function indexDocumentsForSearch(query) {
@@ -929,8 +949,9 @@ async function openDocument(documentId, isCurrentRequest = () => true) {
       { documentId },
     );
     state.activePanel = null;
-    state.layersOpen = false;
-    state.inspectorOpen = false;
+    const showDesktopPanels = window.matchMedia("(min-width: 1100px)").matches;
+    state.layersOpen = showDesktopPanels;
+    state.inspectorOpen = showDesktopPanels;
     state.loading = false;
     setSync("saved", "Saved");
     render();
@@ -1466,7 +1487,7 @@ function renderLibrary() {
       ? `<section class="library-section">${sharedFolders.length ? folderSection(sharedFolders, "Folders") : ""}<div class="section-heading"><h2>Shared designs <span>${sharedDocuments.length}</span></h2></div>${sharedDocuments.length ? documentCollection(sharedDocuments) : sharedFolders.length ? "" : empty}</section>`
       : `${folderSection(rootFolders, "Folders", false, true)}<section class="library-section"><div class="section-heading"><h2>Unfiled designs <span>${rootDocuments.length}</span></h2></div>${rootDocuments.length ? documentCollection(rootDocuments) : empty}</section>`;
   return `<main class="shell library"><div class="library-inner">
-    <div class="library-sticky">${libraryTopbar("Search designs and folders")}${libraryTabs(state.libraryFilter)}</div>
+    <div class="library-sticky">${libraryTopbar("Search designs and folders")}${query ? "" : libraryTabs(state.libraryFilter)}</div>
     <div class="library-content">${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
     ${content}</div>
   </div></main>${renderDialog()}${renderToast()}`;
@@ -1485,7 +1506,7 @@ function renderFolder() {
     <div class="folder-content">
     ${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
     <header class="folder-overview">
-      <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folders.length} folder${folders.length === 1 ? "" : "s"} · ${folder.designCount} design${folder.designCount === 1 ? "" : "s"} · Updated ${escapeHtml(relativeTime(folder.updatedAt))}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
+      <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folderCollectionSummary(folder, folders)}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
     </header>
     ${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}
     <section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div>${documents.length ? documentCollection(documents) : empty}</section>
@@ -1505,7 +1526,7 @@ function folderTopbar(folder) {
 }
 
 function searchControl(placeholder, label = placeholder) {
-  return `<label class="search-wrap">${icon("search")}<input class="search" data-role="search" name="canvas-search" autocomplete="off" type="search" value="${escapeHtml(state.search)}" placeholder="${escapeHtml(placeholder)}…" aria-label="${escapeHtml(label)}" /><kbd>⌘&nbsp;K</kbd></label>`;
+  return `<label class="search-wrap">${icon("search")}<input class="search" data-role="search" name="canvas-search" autocomplete="off" type="search" value="${escapeHtml(state.search)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(label)}" /><kbd>⌘&nbsp;K</kbd></label>`;
 }
 
 function libraryTabs(active) {
@@ -1543,8 +1564,15 @@ function renderSearchResults(query) {
   const scopeControls = scopes.map(([value, label]) => `<button type="button" data-search-scope="${escapeHtml(value)}" aria-pressed="${state.searchScope === value}" class="${state.searchScope === value ? "active" : ""}">${escapeHtml(label)}</button>`).join("");
   const results = count
     ? `${folders.length ? folderSection(folders, "Folders") : ""}<section class="library-section"><div class="section-heading"><h2>Designs <span>${documents.length}</span></h2>${state.searchLoading ? `<span class="search-indexing" role="status">Searching document text…</span>` : ""}</div>${documents.length ? documentCollection(documents) : ""}</section>`
-    : `<section class="empty search-empty"><div>${icon("search")}<h2>No designs match “${escapeHtml(state.search.trim())}”</h2><p>${state.searchLoading ? "Searching document text…" : "Try another name or location, or create a new design with this name."}</p><div class="empty-actions"><button class="button" data-action="clear-search">${icon("close")}Clear search</button><button class="button primary" data-action="create-from-search">${icon("plus")}Create “${escapeHtml(state.search.trim())}”</button></div></div></section>`;
+    : `<section class="empty search-empty"><div><span class="search-empty-art">${icon("search-off")}</span><h2>No designs match “${escapeHtml(state.search.trim())}”</h2><p>${searchEmptyDescription()}</p><div class="empty-actions"><button class="button" data-action="clear-search">${icon("close")}Clear search</button><button class="button primary" data-action="create-from-search">${icon("plus")}Create “${escapeHtml(state.search.trim())}”</button></div></div></section>`;
   return `<section class="search-results"><header class="search-results-head"><h1>Results for “${escapeHtml(state.search.trim())}” <span>${count}</span></h1><div class="search-scopes" aria-label="Search location">${scopeControls}</div></header>${results}</section>`;
+}
+
+function searchEmptyDescription() {
+  if (state.searchLoading || state.searchTrashMatchingCount === null) return "Searching document text and Trash…";
+  const searched = `We searched ${state.documents.length} design names, ${state.folders.length} folder names and the text inside every design.`;
+  if (state.searchTrashMatchingCount === 0) return `${searched} Nothing in Trash matched either.`;
+  return `${searched} ${state.searchTrashMatchingCount} matching item${state.searchTrashMatchingCount === 1 ? " is" : "s are"} in Trash.`;
 }
 
 function emptyLibrary(query = "") {
@@ -1555,14 +1583,23 @@ function emptyLibrary(query = "") {
 
 function emptyFolder(folder, query = "") {
   if (query) return emptyLibrary(query);
-  return `<section class="empty folder-empty"><div><span class="empty-folder-art">${icon("folder")}</span><h2>Nothing in ${escapeHtml(folder.name)} yet</h2><p>Create a design here, or move designs you already have.</p><div class="empty-actions"><button class="button primary" data-action="new">${icon("plus")}New design</button><button class="button" data-action="move-designs-here">${icon("folder-plus")}Move designs here</button></div></div></section>`;
+  return `<section class="empty folder-empty"><div><span class="empty-folder-art">${icon("folder")}</span><h2>Nothing in ${escapeHtml(folder.name)} yet</h2><p>Create a design here, or move ones you already have. Designs keep their sharing when they move, and the folder’s people are added on top.</p><div class="empty-actions"><button class="button primary" data-action="new">${icon("plus")}New design</button><button class="button" data-action="move-designs-here">${icon("folder-plus")}Move designs here</button></div></div></section>`;
+}
+
+function folderCollectionSummary(folder, childFolders) {
+  const parts = [];
+  if (childFolders.length) parts.push(`${childFolders.length} folder${childFolders.length === 1 ? "" : "s"}`);
+  parts.push(`${folder.designCount} design${folder.designCount === 1 ? "" : "s"}`);
+  const isEmpty = childFolders.length === 0 && folder.designCount === 0;
+  const timestamp = relativeTime(isEmpty ? folder.createdAt ?? folder.updatedAt : folder.updatedAt);
+  parts.push(`${isEmpty ? "Created" : "Updated"} ${isEmpty ? timestamp.replace(/^Just/u, "just") : timestamp}`);
+  return escapeHtml(parts.join(" · "));
 }
 
 function renderTrash() {
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${libraryTopbar("Search Trash")}${libraryTabs("trash")}</div>
     <div class="trash-content">
-      <header class="trash-overview"><div class="library-title"><h1>Trash</h1><p>Restore something you still need, or remove it for good.</p></div></header>
       <section class="trash-banner">
         <span class="trash-banner-icon">${icon("info")}</span>
         <p>Designs and folders stay in Trash for 30 days, then they’re deleted for good. Folders restore with everything inside. Previous parents are restored when available; otherwise the item returns to Home.</p>
@@ -1594,12 +1631,12 @@ function renderTrashTable() {
 function trashRow(item) {
   const document = item.kind === "document";
   const detail = document
-    ? `${moduleLabel(item.module)} · ${item.unitCount} ${trashUnitLabel(item.module, item.unitCount)}`
+    ? `${libraryModuleLabel(item.module)} · ${item.unitCount} ${trashUnitLabel(item.module, item.unitCount)}`
     : `Folder · ${item.designCount} design${item.designCount === 1 ? "" : "s"} inside — restore brings ${item.designCount === 1 ? "it" : "them"} all back`;
   const actor = item.deletedBy;
   const actorLabel = actor ? (actor.isCurrentUser ? "You" : actor.name?.trim() || "Unknown") : "Unknown";
   return `<div class="trash-table-row" role="row" data-trash-kind="${item.kind}">
-    <span class="trash-name-cell" role="cell"><i class="trash-item-icon ${item.kind}">${icon(document ? "deck" : "folder")}</i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span></span>
+    <span class="trash-name-cell" role="cell"><i class="trash-item-icon ${item.kind}">${icon(document ? moduleIcon(item.module) : "folder")}</i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span></span>
     <span class="trash-path-cell" role="cell" title="${escapeHtml(item.previousPath)}">${escapeHtml(item.previousPath)}</span>
     <span class="trash-deleted-cell" role="cell"><strong>${escapeHtml(relativeTime(item.deletedAt))}</strong><small>Gone in ${daysUntil(item.recoverableUntil)} day${daysUntil(item.recoverableUntil) === 1 ? "" : "s"}</small></span>
     <span class="trash-actor-cell" role="cell">${actor ? avatar(actor) : `<span class="avatar avatar-fallback" aria-hidden="true">?</span>`}<span>${escapeHtml(actorLabel)}</span></span>
@@ -1619,7 +1656,7 @@ function segment(key, label) {
 function documentCard(document) {
   const preview = state.thumbnails.get(document.id);
   const editor = document.lastEditor && !document.lastEditor.isCurrentUser ? avatar(document.lastEditor) : "";
-  return `<article class="document-card"><button class="document-card-main" data-document-id="${document.id}" aria-label="Open ${escapeHtml(document.title)}"><span class="document-preview">${preview ? `<img src="${preview}" alt="" width="504" height="300" loading="lazy" />` : `<span class="preview-placeholder">${icon("frame")}</span>`}</span><span class="document-meta"><strong>${escapeHtml(document.title)}</strong><span class="document-submeta"><span>${escapeHtml(moduleLabel(document.module))}</span><span>Edited ${escapeHtml(relativeTime(document.updatedAt))}</span>${editor}</span></span></button><button class="icon-button card-menu" data-document-menu="${document.id}" aria-label="Actions for ${escapeHtml(document.title)}">${icon("more")}</button></article>`;
+  return `<article class="document-card"><button class="document-card-main" data-document-id="${document.id}" aria-label="Open ${escapeHtml(document.title)}"><span class="document-preview">${preview ? `<img src="${preview}" alt="" width="504" height="300" loading="lazy" />` : `<span class="preview-placeholder">${icon("frame")}</span>`}</span><span class="document-meta"><strong>${escapeHtml(document.title)}</strong><span class="document-submeta"><span>${escapeHtml(libraryModuleLabel(document.module))}</span><span>Edited ${escapeHtml(relativeTime(document.updatedAt))}</span>${editor}</span></span></button><button class="icon-button card-menu" data-document-menu="${document.id}" aria-label="Actions for ${escapeHtml(document.title)}">${icon("more")}</button></article>`;
 }
 
 function folderCard(folder, nested = false) {
@@ -1651,12 +1688,22 @@ function folderPeopleSummary(folder) {
     .slice(0, 3);
   if (!profiles.length) return "";
   const names = profiles.map((profile, index) => index === 0 && profile === state.currentProfile ? "You" : profile.name?.trim() || profile.email).filter(Boolean);
-  const summary = names.length < 2 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  const summary = names.length === 1 && names[0] === "You"
+    ? "Only you"
+    : names.length < 2 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
   return `<span class="folder-people-summary">${escapeHtml(summary)}</span>`;
 }
 
 function moduleLabel(value) {
   return ({ generic: "Generic", deck: "Deck", web: "Web", mobile: "Mobile" })[value] ?? "Generic";
+}
+
+function libraryModuleLabel(value) {
+  return ({ deck: "Deck", web: "Web", mobile: "Mobile" })[value] ?? "Design";
+}
+
+function moduleIcon(value) {
+  return ({ generic: "generic", deck: "deck", web: "web", mobile: "mobile" })[value] ?? "generic";
 }
 
 function avatar(profile) {
@@ -2271,6 +2318,8 @@ function bindLibrary() {
   }));
   root.querySelector('[data-role="search"]')?.addEventListener("input", (event) => {
     state.search = event.target.value;
+    state.searchTrashGeneration += 1;
+    state.searchTrashMatchingCount = null;
     if (!state.search.trim()) {
       state.searchScope = "everywhere";
       state.searchLoading = false;
@@ -2303,6 +2352,8 @@ function bindLibrary() {
     state.search = "";
     state.searchScope = "everywhere";
     state.searchGeneration += 1;
+    state.searchTrashGeneration += 1;
+    state.searchTrashMatchingCount = null;
     state.searchLoading = false;
     render();
     root.querySelector('[data-role="search"]')?.focus();
@@ -3219,10 +3270,12 @@ function renderDialog() {
     const availableFolders = state.currentFolder && !state.folders.some((folder) => folder.id === state.currentFolder.id)
       ? [...state.folders, state.currentFolder]
       : state.folders;
-    const folderOptions = availableFolders.map((folder) => `<option value="${escapeHtml(folder.id)}" ${folder.id === selectedFolderId ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("");
+    const folderOptions = availableFolders.map((folder) => `<option value="${escapeHtml(folder.id)}" data-design-count="${folder.designCount}" ${folder.id === selectedFolderId ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("");
+    const selectedFolder = availableFolders.find((folder) => folder.id === selectedFolderId);
+    const selectedDesignCount = selectedFolder?.designCount ?? state.documents.length;
     return dialog(
       "New design",
-      `<p class="dialog-intro">Choose what you’re making. Only Generic can change later.</p><div class="module-picker" role="radiogroup" aria-label="Design type">${moduleChoice("generic", "Generic", "frame", "Free canvas for flyers, social, print, anything.")}${moduleChoice("deck", "Deck", "deck", "Slides with a fixed 16:9 stage.", true)}${moduleChoice("web", "Web", "web", "Responsive routes and sections.")}${moduleChoice("mobile", "Mobile", "mobile", "Phone-sized screens and flows.")}</div><div class="design-fields"><div class="field-row"><label for="design-name">Name</label><input id="design-name" class="field" name="design-name" autocomplete="off" data-role="design-name" value="${escapeHtml(state.dialog.name ?? "Untitled")}" /></div><div class="field-row"><label for="design-folder">Save in</label><select id="design-folder" class="field" name="design-folder" autocomplete="off" data-role="design-folder"><option value="">All designs · ${state.folders.length} folders</option>${folderOptions}</select></div></div>`,
+      `<p class="dialog-intro">Choose what you’re making. Only Generic can change later.</p><div class="module-picker" role="radiogroup" aria-label="Design type">${moduleChoice("generic", "Generic", "frame", "Free canvas for flyers, social, print, anything.")}${moduleChoice("deck", "Deck", "deck", "Slides with a fixed 16:9 stage.", true)}${moduleChoice("web", "Web", "web", "Responsive routes and sections.")}${moduleChoice("mobile", "Mobile", "mobile", "Phone-sized screens and flows.")}</div><div class="design-fields"><div class="field-row"><label for="design-name">Name</label><input id="design-name" class="field" name="design-name" autocomplete="off" data-role="design-name" value="${escapeHtml(state.dialog.name ?? "Untitled")}" /></div><div class="field-row"><label for="design-folder">Save in</label><span class="design-folder-control">${icon("folder")}<select id="design-folder" name="design-folder" autocomplete="off" data-role="design-folder"><option value="" data-design-count="${state.documents.length}">All designs</option>${folderOptions}</select><small data-role="design-folder-count">${selectedDesignCount} design${selectedDesignCount === 1 ? "" : "s"}</small>${icon("chevron-down")}</span></div></div>`,
       `<button class="button" data-action="cancel-new-design">Cancel</button><button class="button primary" data-action="create-design">${icon("plus")}Create deck</button>`,
     );
   }
@@ -3311,6 +3364,12 @@ function bindFolderDialogs() {
     const create = root.querySelector('[data-action="create-design"]');
     if (create) create.innerHTML = `${icon("plus")}Create ${moduleLabel(control.value).toLowerCase()}`;
   }));
+  root.querySelector('[data-role="design-folder"]')?.addEventListener("change", (event) => {
+    const option = event.target.selectedOptions[0];
+    const count = Number(option?.dataset.designCount ?? 0);
+    const label = root.querySelector('[data-role="design-folder-count"]');
+    if (label) label.textContent = `${count} design${count === 1 ? "" : "s"}`;
+  });
   root.querySelector('[data-action="cancel-new-design"]')?.addEventListener("click", closeDialog);
   root.querySelector('[data-action="create-design"]')?.addEventListener("click", () => void act(async () => {
     const title = root.querySelector('[data-role="design-name"]')?.value.trim();
@@ -3562,6 +3621,7 @@ function icon(name) {
     "folder-plus": '<path d="M3 7h7l2 2h9v10H3z"/><path d="M12 12v5M9.5 14.5h5"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     search: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
+    "search-off": '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4M8.8 8.8l4.4 4.4m0-4.4-4.4 4.4"/>',
     chevron: '<path d="m9 6 6 6-6 6"/>',
     "chevron-down": '<path d="m6 9 6 6 6-6"/>',
     pencil: '<path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"/><path d="m14 7 3 3"/>',
