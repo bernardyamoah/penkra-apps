@@ -78,8 +78,16 @@ let __changed = false;
 let __copyCounter = 0;
 const __containerTypes = new Set(["frame", "group"]);
 const __clone = (value) => JSON.parse(JSON.stringify(value));
-const __readonly = (value) => {
+const __cloneShared = (value, cache) => {
   if (!value || typeof value !== "object") return value;
+  if (cache.has(value)) return cache.get(value);
+  const clone = Array.isArray(value) ? [] : {};
+  cache.set(value, clone);
+  for (const [key, child] of Object.entries(value)) clone[key] = __cloneShared(child, cache);
+  return clone;
+};
+const __readonly = (value) => {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) __readonly(child);
   return Object.freeze(value);
 };
@@ -147,11 +155,11 @@ function __requireOne(target) {
   return entries[0];
 }
 
-function __context(entry) {
+function __context(entry, cloneCache) {
   const inspected = __inspection[entry.node.id] || {};
   return Object.freeze({
-    node: __readonly(__clone(entry.node)),
-    parent: entry.parent ? __readonly(__clone(entry.parent)) : null,
+    node: __readonly(__cloneShared(entry.node, cloneCache)),
+    parent: entry.parent ? __readonly(__cloneShared(entry.parent, cloneCache)) : null,
     index: entry.index,
     path: entry.path.join("/"),
     bounds: inspected.bounds === undefined ? null : __readonly(__clone(inspected.bounds)),
@@ -197,6 +205,7 @@ function __assertParent(parent) {
 
 globalThis.Get = function Get(selector = "*", visitor, options = {}) {
   __assertSelector(selector);
+  const cloneCache = new Map();
   if (visitor !== undefined) {
     if (typeof visitor !== "function") throw new TypeError("Get visitor must be a function.");
     const limit = options.limit === undefined ? Infinity : Number(options.limit);
@@ -207,7 +216,7 @@ globalThis.Get = function Get(selector = "*", visitor, options = {}) {
     for (const entry of __walkEntries()) {
       if (!__matches(entry, selector)) continue;
       if (count >= limit) break;
-      visitor(__context(entry));
+      visitor(__context(entry, cloneCache));
       count += 1;
     }
     return count;
@@ -222,7 +231,7 @@ globalThis.Get = function Get(selector = "*", visitor, options = {}) {
     if (contexts.length === limit) {
       throw new Error("Get matched more than " + limit + " nodes; use visitor form for traversal or narrow the selector.");
     }
-    contexts.push(__context(entry));
+    contexts.push(__context(entry, cloneCache));
   }
   return contexts;
 };
