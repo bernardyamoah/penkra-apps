@@ -1,4 +1,5 @@
 import { createCanvasApi } from "./canvas-api.mjs";
+import { actionButtonState } from "./interaction-state.mjs";
 import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
 import {
   createFolderForDocument,
@@ -128,6 +129,7 @@ const state = {
   editorDocuments: [],
   thumbnails: new Map(),
   currentProfile: null,
+  shareLoading: false,
   trashItems: [],
   trashTotalCount: 0,
   trashMatchingCount: 0,
@@ -798,6 +800,7 @@ async function createBlankDocument(title = "Untitled", module = "generic", desti
       ? state.route === "folder" ? state.currentFolder?.id ?? null : null
       : destinationFolderId || null;
     const document = await api.createDocument({ title, folderId, source, initialUpdate: encodeState(model) });
+    state.dialog = null;
     await navigateToDocument(document.id);
   } finally {
     model.doc.destroy();
@@ -1556,7 +1559,8 @@ function renderFolder() {
   const matches = (value) => !query || value.toLowerCase().includes(query);
   const folders = sortCollection(state.folderChildren.filter((item) => matches(item.name)), state.collectionSort);
   const documents = sortCollection(state.folderDocuments.filter((item) => matches(item.title)), state.collectionSort);
-  const empty = state.folderCollections.has(folder.id) ? emptyFolder(folder, query) : "";
+  const collectionEmpty = !query && folders.length === 0 && documents.length === 0 && state.folderCollections.has(folder.id);
+  const noResults = query && folders.length === 0 && documents.length === 0 ? emptyLibrary(query) : "";
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${folderTopbar(folder)}</div>
     <div class="folder-content">
@@ -1564,8 +1568,7 @@ function renderFolder() {
     <header class="folder-overview">
       <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folderCollectionSummary(folder, folders)}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
     </header>
-    ${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}
-    <section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div>${documents.length ? documentCollection(documents) : empty}</section>
+    ${collectionEmpty ? folderEmptyState(folder) : `${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}${documents.length ? `<section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div>${documentCollection(documents)}</section>` : noResults}`}
     </div>
   </div></main>${renderDialog()}${renderToast()}`;
 }
@@ -1641,11 +1644,6 @@ function emptyLibrary(query = "") {
     : `<section class="empty"><div>${icon("file")}<h2>No designs here yet</h2><p>Create a design to get started.</p><button class="button primary" data-action="new">${icon("plus")}New design</button></div></section>`;
 }
 
-function emptyFolder(folder, query = "") {
-  if (query) return emptyLibrary(query);
-  return `<section class="empty folder-empty"><div><span class="empty-folder-art">${icon("folder")}</span><h2>Nothing in ${escapeHtml(folder.name)} yet</h2><p>Create a design here, or move ones you already have. Designs keep their sharing when they move, and the folder’s people are added on top.</p><div class="empty-actions"><button class="button primary" data-action="new">${icon("plus")}New design</button><button class="button" data-action="move-designs-here">${icon("folder-plus")}Move designs here</button></div></div></section>`;
-}
-
 async function openMoveDesignsHere() {
   const folder = state.currentFolder;
   if (!folder) return;
@@ -1677,6 +1675,10 @@ function folderCollectionSummary(folder, childFolders) {
   return escapeHtml(parts.join(" · "));
 }
 
+function folderEmptyState(folder) {
+  return `<section class="folder-empty" aria-label="Empty ${escapeHtml(folder.name)} folder"><div class="folder-empty-illustration" aria-hidden="true"><i></i><i></i><span>${icon("folder-input")}</span></div><div class="folder-empty-copy"><h2>Nothing in ${escapeHtml(folder.name)} yet</h2><p>Create a design here, or move ones you already have. Designs keep their sharing when they move, and the folder’s people are added on top.</p></div><div class="folder-empty-actions"><button class="button primary" data-action="new">${icon("plus")}New design</button><button class="button" data-action="move-designs-here">${icon("folder-input")}Move designs here</button></div></section>`;
+}
+
 function renderTrash() {
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${libraryTopbar("Search Trash")}${libraryTabs("trash")}</div>
@@ -1704,7 +1706,7 @@ function renderTrashTable() {
   return `<section class="trash-table" role="table" aria-label="Deleted designs and folders">
     <div class="trash-table-head" role="row"><span role="columnheader">NAME</span><span role="columnheader">WAS IN</span><span role="columnheader">DELETED</span><span role="columnheader">BY</span><span role="columnheader" aria-label="Actions"></span></div>
     <div class="trash-table-body" role="rowgroup">${state.trashItems.map(trashRow).join("")}</div>
-    <footer class="trash-table-footer"><span>${escapeHtml(footer)}</span><span class="trash-agent-hint">${icon("sparkles")}Ask the Agent: “restore everything Bernard deleted yesterday”</span>${state.trashNextCursor ? `<button class="button" data-action="load-more-trash" ${state.trashLoadingMore ? "disabled" : ""}>${state.trashLoadingMore ? "Loading…" : "Load more"}</button>` : ""}</footer>
+    <footer class="trash-table-footer"><span>${escapeHtml(footer)}</span><span class="trash-agent-hint">${icon("sparkles")}Ask the Agent: “restore everything Bernard deleted yesterday”</span>${state.trashNextCursor ? `<button class="button" data-action="load-more-trash" ${state.trashLoadingMore ? 'disabled aria-busy="true"' : ""}>${state.trashLoadingMore ? `${icon("loader")}Loading…` : "Load more"}</button>` : ""}</footer>
   </section>`;
 }
 
@@ -2394,6 +2396,9 @@ function bindLibrary() {
     const folder = state.currentFolder;
     if (folder) void openShare({ type: "folder", id: folder.id, name: folder.name });
   });
+  root.querySelector('[data-action="move-designs-here"]')?.addEventListener("click", () => {
+    if (state.currentFolder) void moveDesignsHere(state.currentFolder);
+  });
   root.querySelector('[data-action="current-folder-menu"]')?.addEventListener("click", () => {
     if (state.currentFolder) void openFolderContextMenu(state.currentFolder);
   });
@@ -2489,18 +2494,18 @@ function bindLibrary() {
       .find((item) => item.id === button.dataset.folderMenu);
     if (folder) void openFolderContextMenu(folder);
   }));
-  root.querySelectorAll("[data-restore-document]").forEach((button) => button.addEventListener("click", () => void act(async () => {
+  root.querySelectorAll("[data-restore-document]").forEach((button) => button.addEventListener("click", (event) => void act(async () => {
     await api.restoreDocument(button.dataset.restoreDocument);
     await documentCollectionLifecycle.refresh();
     setToast("Document restored.");
     render();
-  })));
-  root.querySelectorAll("[data-restore-folder]").forEach((button) => button.addEventListener("click", () => void act(async () => {
+  }, { button: event.currentTarget, key: "restore", subjectId: button.dataset.restoreDocument, label: "Restoring…" })));
+  root.querySelectorAll("[data-restore-folder]").forEach((button) => button.addEventListener("click", (event) => void act(async () => {
     await api.restoreFolder(button.dataset.restoreFolder);
     await documentCollectionLifecycle.refresh();
     setToast("Folder restored.");
     render();
-  })));
+  }, { button: event.currentTarget, key: "restore", subjectId: button.dataset.restoreFolder, label: "Restoring…" })));
   root.querySelectorAll("[data-delete-folder]").forEach((button) => button.addEventListener("click", () => {
     const folder = state.trashItems.find((item) => item.kind === "folder" && item.id === button.dataset.deleteFolder);
     if (!folder) return;
@@ -2516,8 +2521,8 @@ function bindLibrary() {
     render();
   }));
   root.querySelector('[data-action="cancel-confirmation"]')?.addEventListener("click", cancelDestructiveConfirmation);
-  root.querySelector('[data-action="confirm-trash-document"]')?.addEventListener("click", () => void confirmDestructiveAction());
-  root.querySelector('[data-action="confirm-permanently-delete-document"]')?.addEventListener("click", () => void confirmDestructiveAction());
+  root.querySelector('[data-action="confirm-trash-document"]')?.addEventListener("click", (event) => void confirmDestructiveAction(event.currentTarget));
+  root.querySelector('[data-action="confirm-permanently-delete-document"]')?.addEventListener("click", (event) => void confirmDestructiveAction(event.currentTarget));
   root.querySelector('[data-action="load-more-trash"]')?.addEventListener("click", () => void loadMoreTrash());
   root.querySelector('[data-action="empty-trash"]')?.addEventListener("click", () => {
     state.dialog = { kind: "confirm-empty-trash" };
@@ -2525,6 +2530,28 @@ function bindLibrary() {
     render();
   });
   bindFolderDialogs();
+}
+
+async function moveDesignsHere(folder) {
+  const candidates = state.documents.filter((document) => document.folderId !== folder.id);
+  if (!candidates.length) {
+    setToast("No other designs are available to move.");
+    render();
+    return;
+  }
+  const action = await runtime.contextMenu.show(candidates.map((document) => ({
+    id: `move-document:${document.id}`,
+    label: document.title,
+  })));
+  if (!action?.startsWith("move-document:")) return;
+  const document = candidates.find((item) => item.id === action.slice("move-document:".length));
+  if (!document) return;
+  await act(async () => {
+    const moved = await api.moveDocument(document.id, folder.id);
+    upsertDocumentSummary(moved, document.folderId);
+    setToast(`Moved ${moved.title} to ${folder.name}.`);
+    render();
+  }, { key: "move-design-into-folder", subjectId: document.id, label: "Moving…" });
 }
 
 async function openDocumentContextMenu(document) {
@@ -2782,14 +2809,14 @@ function bindEditor() {
     state.dialogFocusSelector = '[data-action="cancel-confirmation"]';
     render();
   });
-  root.querySelector('[data-action="grant"]')?.addEventListener("click", () => void act(async () => {
+  root.querySelector('[data-action="grant"]')?.addEventListener("click", (event) => void act(async () => {
     const input = root.querySelector('[data-role="share-email"]');
     const email = input?.value.trim();
     if (!email) return;
     await api.grantAccess(state.document.id, email);
     state.grants = (await api.listGrants(state.document.id)).items;
     render();
-  }));
+  }, { button: event.currentTarget, key: "invite", subjectId: state.document.id, label: "Inviting…" }));
   root.querySelectorAll("[data-revoke-grant]").forEach((button) => button.addEventListener("click", () => {
     const grant = state.grants.find((item) => item.id === button.dataset.revokeGrant);
     if (!grant) return;
@@ -2798,8 +2825,8 @@ function bindEditor() {
     render();
   }));
   root.querySelector('[data-action="cancel-confirmation"]')?.addEventListener("click", cancelDestructiveConfirmation);
-  root.querySelector('[data-action="confirm-trash-document"]')?.addEventListener("click", () => void confirmDestructiveAction());
-  root.querySelector('[data-action="confirm-remove-collaborator"]')?.addEventListener("click", () => void confirmDestructiveAction());
+  root.querySelector('[data-action="confirm-trash-document"]')?.addEventListener("click", (event) => void confirmDestructiveAction(event.currentTarget));
+  root.querySelector('[data-action="confirm-remove-collaborator"]')?.addEventListener("click", (event) => void confirmDestructiveAction(event.currentTarget));
 }
 
 function bindLayerToolbar() {
@@ -2954,6 +2981,7 @@ function convertSelectedSvgToVectors() {
 
 async function copySelectedNodeReference(button = null) {
   if (!state.document || !state.selectedId) return;
+  const restoreButton = button ? setButtonPending(button, { key: "copy-reference", subjectId: state.selectedId, label: "Copying…" }) : null;
   try {
     const nodeId = resolveCanvasNodeReferenceId({
       document: currentMaterializedDocument(),
@@ -2965,6 +2993,7 @@ async function copySelectedNodeReference(button = null) {
     }
     await copyTextToClipboard(formatCanvasNodeReference({ nodeId }));
     if (button) {
+      restoreButton?.();
       button.textContent = "Copied";
       button.setAttribute("aria-label", "Node reference copied");
       setTimeout(() => {
@@ -2978,6 +3007,7 @@ async function copySelectedNodeReference(button = null) {
     }
   } catch (error) {
     if (button) {
+      restoreButton?.();
       button.textContent = "Copy failed";
       setTimeout(() => {
         if (button.isConnected) button.textContent = "Copy reference";
@@ -3257,12 +3287,14 @@ async function openShare(target = null) {
   state.shareTarget = target ?? { type: "document", id: state.document.id, name: state.document.title };
   state.dialogReturnFocusSelector = '[data-action="share"]';
   state.dialog = "share";
+  state.shareLoading = true;
   state.dialogFocusSelector = '[data-role="share-email"]';
   render();
   await act(async () => {
     state.grants = await loadShareGrants(state.shareTarget);
-    render();
   });
+  state.shareLoading = false;
+  render();
 }
 
 async function loadShareGrants(target) {
@@ -3355,7 +3387,8 @@ function renderDialog() {
     );
   }
   if (state.dialog.kind === "new-design") {
-    const selectedFolderId = state.route === "folder" ? state.currentFolder?.id ?? "" : "";
+    const selectedModule = state.dialog.module ?? "deck";
+    const selectedFolderId = state.dialog.folderId ?? (state.route === "folder" ? state.currentFolder?.id ?? "" : "");
     const availableFolders = state.currentFolder && !state.folders.some((folder) => folder.id === state.currentFolder.id)
       ? [...state.folders, state.currentFolder]
       : state.folders;
@@ -3364,8 +3397,8 @@ function renderDialog() {
     const selectedDesignCount = selectedFolder?.designCount ?? state.documents.length;
     return dialog(
       "New design",
-      `<p class="dialog-intro">Choose what you’re making. Only Generic can change later.</p><div class="module-picker" role="radiogroup" aria-label="Design type">${moduleChoice("generic", "Generic", "frame", "Free canvas for flyers, social, print, anything.")}${moduleChoice("deck", "Deck", "deck", "Slides with a fixed 16:9 stage.", true)}${moduleChoice("web", "Web", "web", "Responsive routes and sections.")}${moduleChoice("mobile", "Mobile", "mobile", "Phone-sized screens and flows.")}</div><div class="design-fields"><div class="field-row"><label for="design-name">Name</label><input id="design-name" class="field" name="design-name" autocomplete="off" data-role="design-name" value="${escapeHtml(state.dialog.name ?? "Untitled")}" /></div><div class="field-row"><label for="design-folder">Save in</label><span class="design-folder-control">${icon("folder")}<select id="design-folder" name="design-folder" autocomplete="off" data-role="design-folder"><option value="" data-design-count="${state.documents.length}">All designs</option>${folderOptions}</select><small data-role="design-folder-count">${selectedDesignCount} design${selectedDesignCount === 1 ? "" : "s"}</small>${icon("chevron-down")}</span></div></div>`,
-      `<button class="button" data-action="cancel-new-design">Cancel</button><button class="button primary" data-action="create-design">${icon("plus")}Create deck</button>`,
+      `<p class="dialog-intro">Choose what you’re making. Only Generic can change later.</p><div class="module-picker" role="radiogroup" aria-label="Design type">${moduleChoice("generic", "Generic", "frame", "Free canvas for flyers, social, print, anything.", selectedModule === "generic")}${moduleChoice("deck", "Deck", "deck", "Slides with a fixed 16:9 stage.", selectedModule === "deck")}${moduleChoice("web", "Web", "web", "Responsive routes and sections.", selectedModule === "web")}${moduleChoice("mobile", "Mobile", "mobile", "Phone-sized screens and flows.", selectedModule === "mobile")}</div><div class="design-fields"><div class="field-row"><label for="design-name">Name</label><input id="design-name" class="field" name="design-name" autocomplete="off" data-role="design-name" value="${escapeHtml(state.dialog.name ?? "Untitled")}" /></div><div class="field-row"><label for="design-folder">Save in</label><span class="design-folder-control">${icon("folder")}<select id="design-folder" name="design-folder" autocomplete="off" data-role="design-folder"><option value="" data-design-count="${state.documents.length}">All designs</option>${folderOptions}</select><small data-role="design-folder-count">${selectedDesignCount} design${selectedDesignCount === 1 ? "" : "s"}</small>${icon("chevron-down")}</span></div></div>`,
+      `<button class="button" data-action="cancel-new-design">Cancel</button><button class="button primary" data-action="create-design">${icon("plus")}Create ${moduleLabel(selectedModule).toLowerCase()}</button>`,
     );
   }
   if (state.dialog.kind === "confirm-trash-folder") {
@@ -3409,7 +3442,10 @@ function renderDialog() {
 function renderShareInvite() {
   const owner = state.currentProfile ? { ...state.currentProfile, isOwner: true, isCurrentUser: true } : null;
   const people = [owner, ...state.grants].filter(Boolean);
-  return `<div class="share-dialog-body"><div class="share-form"><div class="share-email-control">${icon("mail")}<input data-role="share-email" name="collaborator-email" autocomplete="email" spellcheck="false" type="email" placeholder="name@example.com…" aria-label="Collaborator email" /></div><button class="button primary" data-action="grant">Invite</button></div><div class="share-people"><div class="share-people-heading"><strong>People with access</strong><span>${people.length + 1}</span></div>${people.map(sharePersonRow).join("")}<div class="share-person-row"><span class="avatar avatar-fallback share-agent-avatar">A</span><div class="share-person-copy"><strong>Agent</strong><span>Penkra Agent · works in this Thread</span></div></div></div></div>`;
+  const invite = state.shareLoading
+    ? `<button class="button primary" data-action="grant" disabled aria-busy="true">${icon("loader")}Loading…</button>`
+    : `<button class="button primary" data-action="grant">Invite</button>`;
+  return `<div class="share-dialog-body"><div class="share-form"><div class="share-email-control">${icon("mail")}<input data-role="share-email" name="collaborator-email" autocomplete="email" spellcheck="false" type="email" placeholder="name@example.com…" aria-label="Collaborator email" ${state.shareLoading ? "disabled" : ""} /></div>${invite}</div><div class="share-people"><div class="share-people-heading"><strong>People with access</strong><span>${people.length + 1}</span></div>${people.map(sharePersonRow).join("")}<div class="share-person-row"><span class="avatar avatar-fallback share-agent-avatar">A</span><div class="share-person-copy"><strong>Agent</strong><span>Penkra Agent · works in this Thread</span></div></div></div></div>`;
 }
 
 function sharePersonRow(person) {
@@ -3461,21 +3497,20 @@ function bindFolderDialogs() {
     if (label) label.textContent = `${count} design${count === 1 ? "" : "s"}`;
   });
   root.querySelector('[data-action="cancel-new-design"]')?.addEventListener("click", closeDialog);
-  root.querySelector('[data-action="create-design"]')?.addEventListener("click", () => void act(async () => {
+  root.querySelector('[data-action="create-design"]')?.addEventListener("click", (event) => void act(async () => {
     const title = root.querySelector('[data-role="design-name"]')?.value.trim();
     const module = root.querySelector('[data-role="design-module"]:checked')?.value;
     const folderId = root.querySelector('[data-role="design-folder"]')?.value ?? undefined;
     if (!title || !["generic", "deck", "web", "mobile"].includes(module)) return;
-    state.dialog = null;
+    state.dialog = { ...state.dialog, title, module, folderId };
     await createBlankDocument(title, module, folderId);
-  }));
+  }, { button: event.currentTarget, key: "create-design", label: "Creating…" }));
   root.querySelector('[data-action="cancel-folder-form"]')?.addEventListener("click", closeDialog);
-  root.querySelector('[data-action="save-folder"]')?.addEventListener("click", () => void act(async () => {
+  root.querySelector('[data-action="save-folder"]')?.addEventListener("click", (event) => void act(async () => {
     const name = root.querySelector('[data-role="folder-name"]')?.value.trim();
     if (!name) return;
     const form = state.dialog;
-    state.dialog = null;
-    render();
+    state.dialog = { ...form, name };
     if (form.mode === "create-for-document") {
       const { folder, movedDocument } = await createFolderForDocument(api, {
         name,
@@ -3492,52 +3527,51 @@ function bindFolderDialogs() {
         : await api.updateFolder(form.folderId, { name });
       upsertFolderSummary(folder);
     }
-    render();
-  }));
-  root.querySelector('[data-action="cancel-folder-trash"]')?.addEventListener("click", closeDialog);
-  root.querySelector('[data-action="confirm-folder-trash"]')?.addEventListener("click", () => void act(async () => {
-    const folderId = state.dialog.folderId;
-    const parentId = knownFolder(folderId)?.parentId ?? null;
     state.dialog = null;
     render();
+  }, { button: event.currentTarget, key: "save-folder", subjectId: state.dialog?.folderId ?? null, label: state.dialog?.mode === "rename" ? "Renaming…" : "Creating…" }));
+  root.querySelector('[data-action="cancel-folder-trash"]')?.addEventListener("click", closeDialog);
+  root.querySelector('[data-action="confirm-folder-trash"]')?.addEventListener("click", (event) => void act(async () => {
+    const folderId = state.dialog.folderId;
+    const parentId = knownFolder(folderId)?.parentId ?? null;
     await api.deleteFolder(folderId);
+    state.dialog = null;
     removeFolderSummary(folderId);
     if (state.currentFolder?.id === folderId) {
       await (parentId ? navigateToFolder(parentId) : navigateToLibrary());
     } else render();
-  }));
+  }, { button: event.currentTarget, key: "trash-folder", subjectId: state.dialog?.folderId, label: "Moving…" }));
   root.querySelector('[data-action="cancel-folder-delete"]')?.addEventListener("click", closeDialog);
-  root.querySelector('[data-action="confirm-folder-delete"]')?.addEventListener("click", () => void act(async () => {
+  root.querySelector('[data-action="confirm-folder-delete"]')?.addEventListener("click", (event) => void act(async () => {
     const folderId = state.dialog.folderId;
-    state.dialog = null;
     await api.permanentlyDeleteFolder(folderId);
+    state.dialog = null;
     await documentCollectionLifecycle.refresh();
     render();
-  }));
+  }, { button: event.currentTarget, key: "delete-folder", subjectId: state.dialog?.folderId, label: "Deleting…" }));
   root.querySelector('[data-action="cancel-empty-trash"]')?.addEventListener("click", closeDialog);
-  root.querySelector('[data-action="confirm-empty-trash"]')?.addEventListener("click", () => void act(async () => {
-    state.dialog = null;
-    render();
+  root.querySelector('[data-action="confirm-empty-trash"]')?.addEventListener("click", (event) => void act(async () => {
     const result = await api.emptyTrash();
+    state.dialog = null;
     await documentCollectionLifecycle.refresh();
     setToast(`Permanently deleted ${result.documentCount + result.folderCount} item${result.documentCount + result.folderCount === 1 ? "" : "s"}.`);
     render();
-  }));
-  root.querySelector('[data-action="grant"]')?.addEventListener("click", () => void act(async () => {
+  }, { button: event.currentTarget, key: "empty-trash", label: "Deleting…" }));
+  root.querySelector('[data-action="grant"]')?.addEventListener("click", (event) => void act(async () => {
     const email = root.querySelector('[data-role="share-email"]')?.value.trim();
     if (!email || !state.shareTarget) return;
     if (state.shareTarget.type === "folder") await api.grantFolderAccess(state.shareTarget.id, email);
     else await api.grantAccess(state.shareTarget.id, email);
     state.grants = await loadShareGrants(state.shareTarget);
     render();
-  }));
-  root.querySelectorAll("[data-revoke-grant]").forEach((button) => button.addEventListener("click", () => void act(async () => {
+  }, { button: event.currentTarget, key: "invite", subjectId: state.shareTarget?.id, label: "Inviting…" }));
+  root.querySelectorAll("[data-revoke-grant]").forEach((button) => button.addEventListener("click", (event) => void act(async () => {
     if (!state.shareTarget) return;
     if (state.shareTarget.type === "folder") await api.revokeFolderGrant(state.shareTarget.id, button.dataset.revokeGrant);
     else await api.revokeGrant(state.shareTarget.id, button.dataset.revokeGrant);
     state.grants = await loadShareGrants(state.shareTarget);
     render();
-  })));
+  }, { button: event.currentTarget, key: "remove-access", subjectId: button.dataset.revokeGrant, label: "Removing…" })));
 }
 
 function dialog(title, body, actions = '<button class="button" data-action="close-dialog">Done</button>') {
@@ -3571,9 +3605,11 @@ function cancelDestructiveConfirmation() {
   render();
 }
 
-async function confirmDestructiveAction() {
+async function confirmDestructiveAction(button = null) {
   if (!isDestructiveConfirmation(state.dialog)) return;
   const confirmation = state.dialog;
+  const pendingLabel = confirmation.kind === "confirm-trash-document" ? "Moving…" : confirmation.kind === "confirm-remove-collaborator" ? "Removing…" : "Deleting…";
+  const subjectId = confirmation.documentId ?? confirmation.grantId;
   await act(async () => {
     const result = await executeDestructiveConfirmation(confirmation, {
       trashDocument: (documentId) => api.deleteDocument(documentId),
@@ -3601,7 +3637,7 @@ async function confirmDestructiveAction() {
     state.dialog = "share";
     state.dialogFocusSelector = '[data-role="share-email"]';
     render();
-  });
+  }, button ? { button, key: confirmation.kind, subjectId, label: pendingLabel } : null);
 }
 
 function focusRequestedControl() {
@@ -3635,14 +3671,45 @@ function trapFocusWithin(event, container) {
   }
 }
 
-async function act(action) {
+async function act(action, pending = null) {
+  const restoreButton = pending?.button ? setButtonPending(pending.button, pending) : null;
   try {
     state.error = null;
     await action();
   } catch (error) {
     setToast(message(error), true);
     render();
+  } finally {
+    restoreButton?.();
   }
+}
+
+function setButtonPending(button, options) {
+  const original = {
+    disabled: button.disabled,
+    ariaBusy: button.getAttribute("aria-busy"),
+    html: button.innerHTML,
+  };
+  const view = actionButtonState(
+    { key: options.key, subjectId: options.subjectId ?? null },
+    {
+      key: options.key,
+      subjectId: options.subjectId ?? null,
+      label: button.textContent?.trim() ?? "",
+      pendingLabel: options.label,
+      icon: null,
+    },
+  );
+  button.disabled = view.disabled;
+  button.setAttribute("aria-busy", view.ariaBusy);
+  button.innerHTML = `${icon(view.icon)}${escapeHtml(view.label)}`;
+  return () => {
+    if (!button.isConnected) return;
+    button.disabled = original.disabled;
+    if (original.ariaBusy === null) button.removeAttribute("aria-busy");
+    else button.setAttribute("aria-busy", original.ariaBusy);
+    button.innerHTML = original.html;
+  };
 }
 
 function setToast(text, error = false) {
@@ -3712,6 +3779,7 @@ function icon(name) {
     frame: '<path d="M5 5h14v14H5z"/><path d="M3 8h4M17 8h4M8 3v4M8 17v4"/>',
     folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
     "folder-plus": '<path d="M3 7h7l2 2h9v10H3z"/><path d="M12 12v5M9.5 14.5h5"/>',
+    "folder-input": '<path d="M3 6h7l2 2h9v11H3z"/><path d="M12 11v7M9 15l3 3 3-3"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     search: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
     "search-off": '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4M8.8 8.8l4.4 4.4m0-4.4-4.4 4.4"/>',
@@ -3734,6 +3802,7 @@ function icon(name) {
     mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/>',
     download: '<path d="M12 3v12m-5-5 5 5 5-5"/><path d="M5 20h14"/>',
     more: '<circle cx="6" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="18" cy="12" r="1"/>',
+    loader: '<path d="M21 12a9 9 0 1 1-6.2-8.6"/>',
     refresh: '<path d="M20 11a8 8 0 0 0-14.9-4M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.9 4M20 20v-5h-5"/>',
     redo: '<path d="M18 8v5h-5"/><path d="M18 13a7 7 0 1 0-1.7 4.6"/>',
     rectangle: '<rect x="5" y="7" width="14" height="10" rx="1"/>',
