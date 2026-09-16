@@ -1,4 +1,5 @@
 import { createCanvasApi } from "./canvas-api.mjs";
+import { COLLECTION_SORT_OPTIONS, sortCollection } from "./collection-toolbar.mjs";
 import { actionButtonState } from "./interaction-state.mjs";
 import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
 import { createFolderForDocument } from "./folder-actions.mjs";
@@ -95,6 +96,8 @@ configureCanvasFonts(runtime, { performanceMonitor });
 const state = {
   route: "library",
   libraryFilter: "recent",
+  collectionSort: "updated",
+  collectionView: "grid",
   search: "",
   documents: [],
   folders: [],
@@ -1414,20 +1417,36 @@ function renderDocumentUnavailable() {
 function renderLibrary() {
   const query = state.search.trim().toLowerCase();
   const matches = (value) => !query || value.toLowerCase().includes(query);
-  const recentDocuments = [...state.documents]
-    .filter((document) => document.lastOpenedAt && matches(document.title))
-    .sort((a, b) => String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)));
-  const rootDocuments = state.documents.filter((document) => document.folderId === null && matches(document.title));
-  const rootFolders = state.folders.filter((folder) => matches(folder.name));
-  const sharedDocuments = state.documents.filter((document) => document.access === "editor" && matches(document.title));
-  const sharedFolders = state.folders.filter((folder) => folder.access === "editor" && matches(folder.name));
-  const filteredRecentFolders = state.recentFolders.filter((folder) => matches(folder.name));
+  const recentDocuments = sortCollection(
+    state.documents.filter((document) => document.lastOpenedAt && matches(document.title)),
+    state.collectionSort,
+  );
+  const rootDocuments = sortCollection(
+    state.documents.filter((document) => document.folderId === null && matches(document.title)),
+    state.collectionSort,
+  );
+  const rootFolders = sortCollection(
+    state.folders.filter((folder) => matches(folder.name)),
+    state.collectionSort,
+  );
+  const sharedDocuments = sortCollection(
+    state.documents.filter((document) => document.access === "editor" && matches(document.title)),
+    state.collectionSort,
+  );
+  const sharedFolders = sortCollection(
+    state.folders.filter((folder) => folder.access === "editor" && matches(folder.name)),
+    state.collectionSort,
+  );
+  const filteredRecentFolders = sortCollection(
+    state.recentFolders.filter((folder) => matches(folder.name)),
+    state.collectionSort,
+  );
   const empty = state.libraryLoaded ? emptyLibrary(query) : "";
   const content = state.libraryFilter === "recent"
-    ? `${filteredRecentFolders.length ? folderSection(filteredRecentFolders, "Folders", true) : ""}<section class="library-section"><div class="section-heading"><h2>Recent designs <span>${recentDocuments.length}</span></h2></div>${recentDocuments.length ? `<div class="document-grid">${recentDocuments.map(documentCard).join("")}</div>` : empty}</section>`
+    ? `${filteredRecentFolders.length ? folderSection(filteredRecentFolders, "Folders", true) : ""}<section class="library-section"><div class="section-heading"><h2>Recent designs <span>${recentDocuments.length}</span></h2></div>${recentDocuments.length ? documentCollection(recentDocuments) : empty}</section>`
     : state.libraryFilter === "shared"
-      ? `<section class="library-section">${sharedFolders.length ? folderSection(sharedFolders, "Folders") : ""}<div class="section-heading"><h2>Shared designs <span>${sharedDocuments.length}</span></h2></div>${sharedDocuments.length ? `<div class="document-grid">${sharedDocuments.map(documentCard).join("")}</div>` : sharedFolders.length ? "" : empty}</section>`
-      : `${folderSection(rootFolders, "Folders", false, true)}<section class="library-section"><div class="section-heading"><h2>Designs <span>${rootDocuments.length}</span></h2></div>${rootDocuments.length ? `<div class="document-grid">${rootDocuments.map(documentCard).join("")}</div>` : empty}</section>`;
+      ? `<section class="library-section">${sharedFolders.length ? folderSection(sharedFolders, "Folders") : ""}<div class="section-heading"><h2>Shared designs <span>${sharedDocuments.length}</span></h2></div>${sharedDocuments.length ? documentCollection(sharedDocuments) : sharedFolders.length ? "" : empty}</section>`
+      : `${folderSection(rootFolders, "Folders", false, true)}<section class="library-section"><div class="section-heading"><h2>Designs <span>${rootDocuments.length}</span></h2></div>${rootDocuments.length ? documentCollection(rootDocuments) : empty}</section>`;
   return `<main class="shell library"><div class="library-inner">
     <div class="library-sticky">${libraryTopbar("Search designs and folders")}${libraryTabs(state.libraryFilter)}</div>
     <div class="library-content">${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
@@ -1440,8 +1459,8 @@ function renderFolder() {
   if (!folder) return `<main class="shell empty"><div><h2>Folder unavailable</h2></div></main>`;
   const query = state.search.trim().toLowerCase();
   const matches = (value) => !query || value.toLowerCase().includes(query);
-  const folders = state.folderChildren.filter((item) => matches(item.name));
-  const documents = state.folderDocuments.filter((item) => matches(item.title));
+  const folders = sortCollection(state.folderChildren.filter((item) => matches(item.name)), state.collectionSort);
+  const documents = sortCollection(state.folderDocuments.filter((item) => matches(item.title)), state.collectionSort);
   const collectionEmpty = !query && folders.length === 0 && documents.length === 0 && state.folderCollections.has(folder.id);
   const noResults = query && folders.length === 0 && documents.length === 0 ? emptyLibrary(query) : "";
   return `<main class="shell library"><div class="library-inner">
@@ -1451,7 +1470,7 @@ function renderFolder() {
     <header class="folder-overview">
       <span class="folder-overview-icon">${icon("folder")}</span><div class="library-title"><div class="folder-name-line"><h1>${escapeHtml(folder.name)}</h1>${folder.access === "owner" ? `<button class="icon-button" data-action="rename-current-folder" aria-label="Rename folder">${icon("pencil")}</button>` : ""}</div><div class="folder-detail-line"><p>${folder.designCount} design${folder.designCount === 1 ? "" : "s"} · Created ${escapeHtml(relativeTime(folder.createdAt ?? folder.updatedAt))}</p>${folderPeopleSummary(folder)}</div></div><div class="folder-header-actions">${collectionControls()}${folder.access === "owner" ? `<button class="button" data-action="share-current-folder">${icon("person-plus")}Share folder</button>` : ""}<button class="icon-button" data-action="current-folder-menu" aria-label="Folder actions">${icon("more")}</button></div>
     </header>
-    ${collectionEmpty ? folderEmptyState(folder) : `${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}${documents.length ? `<section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div><div class="document-grid">${documents.map(documentCard).join("")}</div></section>` : noResults}`}
+    ${collectionEmpty ? folderEmptyState(folder) : `${folders.length ? folderSection(folders, "Folders", false, false, true) : ""}${documents.length ? `<section class="library-section"><div class="section-heading"><h2>Designs in ${escapeHtml(folder.name)} <span>${documents.length}</span></h2></div>${documentCollection(documents)}</section>` : noResults}`}
     </div>
   </div></main>${renderDialog()}${renderToast()}`;
 }
@@ -1476,11 +1495,18 @@ function libraryTabs(active) {
 }
 
 function folderSection(folders, title, rail = false, includeNew = false, nested = false) {
-  return `<section class="library-section"><div class="section-heading"><h2>${escapeHtml(title)} <span>${folders.length}</span></h2>${rail && folders.length >= 10 ? `<span class="section-link">See more</span>` : ""}</div><div class="${rail ? "folder-rail" : "folder-grid"}">${folders.map((folder) => folderCard(folder, nested)).join("")}${includeNew ? `<button class="folder-card folder-card-new" data-action="new-folder">${icon("folder-plus")}<span><strong>New folder</strong></span></button>` : ""}</div></section>`;
+  const useRail = rail && state.collectionView === "grid";
+  const layout = useRail ? "folder-rail" : `folder-grid${state.collectionView === "list" ? " folder-list" : ""}`;
+  return `<section class="library-section"><div class="section-heading"><h2>${escapeHtml(title)} <span>${folders.length}</span></h2>${useRail && folders.length >= 10 ? `<span class="section-link">See more</span>` : ""}</div><div class="${layout}">${folders.map((folder) => folderCard(folder, nested)).join("")}${includeNew ? `<button class="folder-card folder-card-new" data-action="new-folder">${icon("folder-plus")}<span><strong>New folder</strong></span></button>` : ""}</div></section>`;
 }
 
 function collectionControls() {
-  return `<div class="collection-controls" aria-hidden="true"><span class="view-toggle">${icon("grid")}${icon("list")}</span><span class="sort-control">Last edited ${icon("chevron-down")}</span></div>`;
+  const sort = COLLECTION_SORT_OPTIONS.find((option) => option.id === state.collectionSort) ?? COLLECTION_SORT_OPTIONS[0];
+  return `<div class="collection-controls"><div class="view-toggle" role="group" aria-label="Choose view"><button class="view-option ${state.collectionView === "grid" ? "active" : ""}" data-action="set-collection-view" data-view="grid" type="button" aria-label="Grid view" aria-pressed="${state.collectionView === "grid"}">${icon("grid")}</button><button class="view-option ${state.collectionView === "list" ? "active" : ""}" data-action="set-collection-view" data-view="list" type="button" aria-label="List view" aria-pressed="${state.collectionView === "list"}">${icon("list")}</button></div><button class="sort-control" data-action="choose-collection-sort" type="button" aria-haspopup="menu">${escapeHtml(sort.label)} ${icon("chevron-down")}</button></div>`;
+}
+
+function documentCollection(documents) {
+  return `<div class="document-grid${state.collectionView === "list" ? " document-list" : ""}">${documents.map(documentCard).join("")}</div>`;
 }
 
 function emptyLibrary(query = "") {
@@ -2170,6 +2196,13 @@ function bindLibrary() {
   root.querySelector('[data-action="current-folder-menu"]')?.addEventListener("click", () => {
     if (state.currentFolder) void openFolderContextMenu(state.currentFolder);
   });
+  root.querySelectorAll('[data-action="set-collection-view"]').forEach((button) => button.addEventListener("click", () => {
+    const view = button.dataset.view;
+    if (view !== "grid" && view !== "list") return;
+    state.collectionView = view;
+    render();
+  }));
+  root.querySelector('[data-action="choose-collection-sort"]')?.addEventListener("click", () => void chooseCollectionSort());
   root.querySelectorAll('[data-action="new"]').forEach((button) => button.addEventListener("click", () => {
     state.dialog = { kind: "new-design" };
     state.dialogFocusSelector = '[data-role="design-name"]';
@@ -2252,6 +2285,18 @@ function bindLibrary() {
     render();
   });
   bindFolderDialogs();
+}
+
+async function chooseCollectionSort() {
+  const action = await runtime.contextMenu.show(COLLECTION_SORT_OPTIONS.map((option) => ({
+    id: `collection-sort:${option.id}`,
+    label: option.label,
+  })));
+  if (!action?.startsWith("collection-sort:")) return;
+  const sort = action.slice("collection-sort:".length);
+  if (!COLLECTION_SORT_OPTIONS.some((option) => option.id === sort)) return;
+  state.collectionSort = sort;
+  render();
 }
 
 async function moveDesignsHere(folder) {
