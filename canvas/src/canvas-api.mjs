@@ -82,6 +82,20 @@ export function createCanvasApi(runtime = globalThis.penkra) {
         : project.snapshot.projection;
       return { ...project, snapshot: { ...project.snapshot, source } };
     },
+    getDocumentForExecution: async (id) => {
+      const encoded = encodeURIComponent(id);
+      const project = await request(`/${encoded}?chunked=auto`);
+      if ((project.updates ?? []).length === 0) {
+        const source = project.snapshot.chunked
+          ? decodeJson(await readSnapshotContent(request, encoded, project.snapshot.throughSequence, "projection", project.snapshot.projectionBytes))
+          : project.snapshot.projection;
+        return { payload: { ...project, snapshot: { ...project.snapshot, source } }, projectionOnly: true };
+      }
+      const snapshot = project.snapshot.chunked
+        ? await readChunkedSnapshot(request, encoded, project.snapshot)
+        : { ...project.snapshot, source: project.snapshot.projection };
+      return { payload: { ...project, snapshot }, projectionOnly: false };
+    },
     listAssets: async (id) => {
       const assets = await request(`/${encodeURIComponent(id)}/blobs`);
       return assets.items;

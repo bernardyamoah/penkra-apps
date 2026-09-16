@@ -510,6 +510,98 @@ test("Canvas reads large projections in bounded parallel server-sized ranges", a
   assert.equal(new Set(calls.map((call) => call.offset)).size, calls.length);
 });
 
+test("execution reads a settled document projection with one metadata request and no state or assets", async () => {
+  const source = { version: "2.17", children: [{ id: "frame", type: "frame", children: [] }] };
+  const projectionBytes = new TextEncoder().encode(JSON.stringify(source));
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input.path);
+        if (input.path === "/projects/document?chunked=auto") {
+          return response(200, {
+            id: "document",
+            snapshot: { throughSequence: 7, chunked: true, projectionBytes: projectionBytes.byteLength, stateBytes: 3 },
+            updates: [],
+          });
+        }
+        if (input.path === "/projects/document/snapshots/7/content?kind=projection&offset=0") {
+          return response(200, {
+            bytes: Buffer.from(projectionBytes).toString("base64"),
+            totalBytes: projectionBytes.byteLength,
+            complete: true,
+          });
+        }
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const loaded = await api.getDocumentForExecution("document");
+
+  assert.equal(loaded.projectionOnly, true);
+  assert.deepEqual(loaded.payload.snapshot.source, source);
+  assert.deepEqual(calls, [
+    "/projects/document?chunked=auto",
+    "/projects/document/snapshots/7/content?kind=projection&offset=0",
+  ]);
+});
+
+test("execution hydrates a document with pending updates from one metadata request", async () => {
+  const source = { version: "2.17", children: [] };
+  const projectionBytes = new TextEncoder().encode(JSON.stringify(source));
+  const stateBytes = Uint8Array.from([1, 2, 3]);
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input.path);
+        if (input.path === "/projects/document?chunked=auto") {
+          return response(200, {
+            id: "document",
+            snapshot: {
+              throughSequence: 7,
+              chunked: true,
+              projectionBytes: projectionBytes.byteLength,
+              stateBytes: stateBytes.byteLength,
+            },
+            updates: [{ sequence: 8, update: "AQ==" }],
+          });
+        }
+        if (input.path === "/projects/document/snapshots/7/content?kind=projection&offset=0") {
+          return response(200, {
+            bytes: Buffer.from(projectionBytes).toString("base64"),
+            totalBytes: projectionBytes.byteLength,
+            complete: true,
+          });
+        }
+        if (input.path === "/projects/document/snapshots/7/content?kind=state&offset=0") {
+          return response(200, {
+            bytes: Buffer.from(stateBytes).toString("base64"),
+            totalBytes: stateBytes.byteLength,
+            complete: true,
+          });
+        }
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const loaded = await api.getDocumentForExecution("document");
+
+  assert.equal(loaded.projectionOnly, false);
+  assert.deepEqual(loaded.payload.snapshot.source, source);
+  assert.equal(loaded.payload.snapshot.state, Buffer.from(stateBytes).toString("base64"));
+  assert.equal(calls.filter((path) => path === "/projects/document?chunked=auto").length, 1);
+  assert.deepEqual(new Set(calls.slice(1)), new Set([
+    "/projects/document/snapshots/7/content?kind=projection&offset=0",
+    "/projects/document/snapshots/7/content?kind=state&offset=0",
+  ]));
+  assert.equal(calls.some((path) => path.endsWith("/blobs")), false);
+});
+
 test("opening an unmigrated document returns its projection without side effects", async () => {
   const source = { version: "2.17", children: [{ id: "home", type: "frame", width: 720, height: 480, children: [] }] };
   const calls = [];

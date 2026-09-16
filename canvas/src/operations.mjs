@@ -167,11 +167,13 @@ runtime.operations.handle("documents.open", async ({ documentId }, context) => {
 runtime.operations.handle("documents.execute", async ({ documentId, code }, context) => {
   const signal = context?.signal ?? new AbortController().signal;
   const { executeCanvasScript, scriptNeedsInspection } = await import("./script-runtime.mjs");
-  const projected = await api.getDocumentProjection(documentId);
-  let payload = projected ?? await api.getDocument(documentId);
-  let model = projected ? null : restoreDocumentModel(payload);
+  let { payload, projectionOnly } = await api.getDocumentForExecution(documentId);
+  let model = projectionOnly ? null : restoreDocumentModel(payload);
   try {
-    const before = model ? materialize(model) : structuredClone(payload.snapshot.source);
+    // A projection is parsed JSON and executeCanvasScript serializes it directly
+    // into an isolated VM. It cannot mutate the Account response object, so a
+    // second host-side deep clone would only duplicate the complete document.
+    const before = model ? materialize(model) : payload.snapshot.source;
     const needsInitialInspection = scriptNeedsInspection(code);
     const inspectDocument = needsInitialInspection
       ? (await import("./document-inspection.mjs")).inspectDocument

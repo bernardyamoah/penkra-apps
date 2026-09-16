@@ -258,16 +258,15 @@ test("documents.trash requires exact current-title confirmation without decoding
 test("read-only execute reports real inspection without advancing the source sequence", async () => {
   const handlers = new Map();
   const requests = [];
+  const source = {
+    version: "2.15",
+    children: [
+      { id: "frame", type: "frame", x: 10, y: 20, width: 200, height: 100, children: [] },
+    ],
+  };
+  const original = structuredClone(source);
   globalThis.penkra = {
-    account: readableDocumentAccount(
-      {
-        version: "2.15",
-        children: [
-          { id: "frame", type: "frame", x: 10, y: 20, width: 200, height: 100, children: [] },
-        ],
-      },
-      requests,
-    ),
+    account: readableDocumentAccount(source, requests),
     operations: { handle: (name, handler) => handlers.set(name, handler) },
   };
   await import(`./operations.mjs?read-test=${Date.now()}`);
@@ -282,6 +281,60 @@ test("read-only execute reports real inspection without advancing the source seq
   assert.deepEqual(result.touchedNodeIds, []);
   assert.equal(result.prints[0].width, 200);
   assert.equal(requests.some((request) => request.method === "POST"), false);
+  assert.deepEqual(source, original);
+});
+
+test("a projection-based edit rehydrates once and rejects a newer authoritative sequence", async () => {
+  const handlers = new Map();
+  const requests = [];
+  const source = {
+    version: "2.15",
+    children: [
+      { id: "frame", type: "frame", name: "Before", x: 0, y: 0, width: 120, height: 80, children: [] },
+    ],
+  };
+  const model = createDocumentModel(source);
+  const state = encodeState(model);
+  model.doc.destroy();
+  let metadataReads = 0;
+  globalThis.penkra = {
+    account: {
+      async request(request) {
+        requests.push(request);
+        if (request.path === "/projects/document-1?chunked=auto") {
+          metadataReads += 1;
+          return response(200, {
+            id: "document-1",
+            title: "Design",
+            access: "owner",
+            ownerAccountId: "account-1",
+            snapshot: {
+              throughSequence: metadataReads === 1 ? 7 : 8,
+              state,
+              projection: source,
+            },
+            updates: [],
+          });
+        }
+        if (request.path === "/projects/document-1/blobs") return response(200, { items: [] });
+        throw new Error(`Unexpected request ${request.method} ${request.path}`);
+      },
+      subscribe() {},
+    },
+    operations: { handle: (name, handler) => handlers.set(name, handler) },
+  };
+  await import(`./operations.mjs?conflict-test=${Date.now()}`);
+
+  await assert.rejects(
+    handlers.get("documents.execute")({
+      documentId: "document-1",
+      code: 'Update("#frame", { name: "After" });',
+    }),
+    (error) => error.code === "CANVAS_DOCUMENT_CONFLICT",
+  );
+
+  assert.equal(metadataReads, 2);
+  assert.equal(requests.some((request) => (request.method ?? "GET") === "POST"), false);
 });
 
 test("execute returns TakeScreenshot renders as MCP-compatible rich content", async () => {
