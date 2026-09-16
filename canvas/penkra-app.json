@@ -32,7 +32,7 @@
     {
       "name": "network-fetch",
       "required": true,
-      "reason": "Canvas loads the exact font faces used by a design through host-validated online font providers."
+      "reason": "Canvas loads design font faces and deterministic fallback profile avatars from Navii using non-PII Account IDs."
     }
   ],
   "operations": [
