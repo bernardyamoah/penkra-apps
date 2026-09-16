@@ -100,9 +100,11 @@ const state = {
   searchDocumentText: new Map(),
   searchGeneration: 0,
   searchTimer: null,
+  searchRenderTimer: null,
   searchLoading: false,
   searchTrashGeneration: 0,
   searchTrashMatchingCount: null,
+  searchTrashFailed: false,
   collectionView: "grid",
   collectionSort: "updated",
   documents: [],
@@ -660,18 +662,44 @@ function scheduleDocumentSearch() {
   }, 250);
 }
 
+function scheduleSearchRender() {
+  clearTimeout(state.searchRenderTimer);
+  state.searchRenderTimer = setTimeout(() => {
+    state.searchRenderTimer = null;
+    render();
+  }, 120);
+}
+
+function clearLibrarySearch() {
+  clearTimeout(state.searchTimer);
+  clearTimeout(state.searchRenderTimer);
+  clearTimeout(state.trashSearchTimer);
+  state.searchTimer = null;
+  state.searchRenderTimer = null;
+  state.trashSearchTimer = null;
+  state.search = "";
+  state.searchScope = "everywhere";
+  state.searchGeneration += 1;
+  state.searchTrashGeneration += 1;
+  state.searchTrashMatchingCount = null;
+  state.searchTrashFailed = false;
+  state.searchLoading = false;
+}
+
 async function searchTrashForQuery(query) {
   const generation = ++state.searchTrashGeneration;
   state.searchTrashMatchingCount = null;
+  state.searchTrashFailed = false;
   try {
     const result = await api.listTrashItems(null, { query });
     if (generation !== state.searchTrashGeneration || state.search.trim().toLocaleLowerCase() !== query) return;
     state.searchTrashMatchingCount = result.matchingCount;
     render();
   } catch (error) {
-    if (generation === state.searchTrashGeneration) {
-      console.warn("Canvas could not search Trash.", error);
-    }
+    if (generation !== state.searchTrashGeneration || state.search.trim().toLocaleLowerCase() !== query) return;
+    console.warn("Canvas could not search Trash.", error);
+    state.searchTrashFailed = true;
+    render();
   }
 }
 
@@ -708,6 +736,10 @@ function handleDocumentCollectionError(error, { phase }) {
   }
   state.loading = false;
   state.error = message(error);
+  if (state.route === "trash") {
+    state.trashItems = [];
+    state.trashLoaded = true;
+  }
   render();
 }
 
@@ -1569,8 +1601,9 @@ function renderSearchResults(query) {
 }
 
 function searchEmptyDescription() {
-  if (state.searchLoading || state.searchTrashMatchingCount === null) return "Searching document text and Trash…";
   const searched = `We searched ${state.documents.length} design names, ${state.folders.length} folder names and the text inside every design.`;
+  if (state.searchLoading || (state.searchTrashMatchingCount === null && !state.searchTrashFailed)) return "Searching document text and Trash…";
+  if (state.searchTrashFailed) return `${searched} Trash couldn’t be searched.`;
   if (state.searchTrashMatchingCount === 0) return `${searched} Nothing in Trash matched either.`;
   return `${searched} ${state.searchTrashMatchingCount} matching item${state.searchTrashMatchingCount === 1 ? " is" : "s are"} in Trash.`;
 }
@@ -1605,8 +1638,7 @@ function renderTrash() {
         <p>Designs and folders stay in Trash for 30 days, then they’re deleted for good. Folders restore with everything inside. Previous parents are restored when available; otherwise the item returns to Home.</p>
         <button class="button danger" data-action="empty-trash" ${state.trashTotalCount ? "" : "disabled"}>${icon("trash")}Empty trash</button>
       </section>
-      ${state.error ? `<p class="error-copy">${escapeHtml(state.error)}</p>` : ""}
-      ${state.trashItems.length ? renderTrashTable() : state.trashLoaded ? `<section class="empty trash-empty"><div>${icon("trash")}<h2>${state.search.trim() ? "No results in Trash" : "Trash is empty"}</h2><p>${state.search.trim() ? "Try another name or location." : "Items moved to Trash will stay here for 30 days."}</p></div></section>` : `<section class="trash-loading" aria-label="Loading Trash"></section>`}
+      ${state.error ? `<section class="empty trash-empty"><div>${icon("info")}<h2>Trash search failed</h2><p>${escapeHtml(state.error)}</p></div></section>` : state.trashItems.length ? renderTrashTable() : state.trashLoaded ? `<section class="empty trash-empty"><div>${icon("trash")}<h2>${state.search.trim() ? "No results in Trash" : "Trash is empty"}</h2><p>${state.search.trim() ? "Try another name or location." : "Items moved to Trash will stay here for 30 days."}</p></div></section>` : `<section class="trash-loading" aria-label="Loading Trash"></section>`}
     </div>
   </div></main>${renderDialog()}${renderToast()}`;
 }
@@ -2287,8 +2319,14 @@ function bindCommon() {
 
 function bindLibrary() {
   root.querySelector('[data-action="open-trash"]')?.addEventListener("click", () => void navigateToTrash());
-  root.querySelector('[data-action="back-to-files"]')?.addEventListener("click", () => void navigateToLibrary());
-  root.querySelector('[data-action="folder-home"]')?.addEventListener("click", () => void navigateToLibrary());
+  root.querySelector('[data-action="back-to-files"]')?.addEventListener("click", () => {
+    clearLibrarySearch();
+    void navigateToLibrary();
+  });
+  root.querySelector('[data-action="folder-home"]')?.addEventListener("click", () => {
+    clearLibrarySearch();
+    void navigateToLibrary();
+  });
   root.querySelector('[data-action="folder-back"]')?.addEventListener("click", () => {
     const parentId = state.currentFolder?.parentId;
     void (parentId ? navigateToFolder(parentId) : navigateToLibrary());
@@ -2318,19 +2356,20 @@ function bindLibrary() {
   }));
   root.querySelector('[data-role="search"]')?.addEventListener("input", (event) => {
     state.search = event.target.value;
+    state.searchGeneration += 1;
     state.searchTrashGeneration += 1;
     state.searchTrashMatchingCount = null;
+    state.searchTrashFailed = false;
+    state.error = null;
     if (!state.search.trim()) {
       state.searchScope = "everywhere";
       state.searchLoading = false;
-      state.searchGeneration += 1;
     }
-    render();
-    const search = root.querySelector('[data-role="search"]');
-    search?.focus();
-    search?.setSelectionRange(state.search.length, state.search.length);
+    scheduleSearchRender();
     if (state.route === "trash") {
       clearTimeout(state.trashSearchTimer);
+      state.trashItems = [];
+      state.trashLoaded = false;
       state.trashSearchTimer = setTimeout(() => void documentCollectionLifecycle.refresh(), 200);
     } else {
       scheduleDocumentSearch();
@@ -2349,12 +2388,7 @@ function bindLibrary() {
     render();
   }));
   root.querySelector('[data-action="clear-search"]')?.addEventListener("click", () => {
-    state.search = "";
-    state.searchScope = "everywhere";
-    state.searchGeneration += 1;
-    state.searchTrashGeneration += 1;
-    state.searchTrashMatchingCount = null;
-    state.searchLoading = false;
+    clearLibrarySearch();
     render();
     root.querySelector('[data-role="search"]')?.focus();
   });
@@ -2371,7 +2405,10 @@ function bindLibrary() {
   root.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => {
     void activateLibraryTab(state.route, button.dataset.filter, {
       select: (filter) => { state.libraryFilter = filter; },
-      navigateToLibrary,
+      navigateToLibrary: () => {
+        clearLibrarySearch();
+        return navigateToLibrary();
+      },
       render,
     });
   }));
