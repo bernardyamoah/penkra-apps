@@ -1,6 +1,10 @@
 import { createCanvasApi } from "./canvas-api.mjs";
 import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
-import { createFolderForDocument } from "./folder-actions.mjs";
+import {
+  createFolderForDocument,
+  folderCreationParentId,
+  nestedFolderForm,
+} from "./folder-actions.mjs";
 import { createBlankDocumentSource } from "./blank-document.mjs";
 import { createDocumentCollectionLifecycle } from "./document-collection-lifecycle.mjs";
 import { createDocumentAssetCache } from "./document-asset-cache.mjs";
@@ -2618,7 +2622,7 @@ async function openFolderContextMenu(folder) {
   if (!action) return;
   if (action === "open") return navigateToFolder(folder.id);
   if (action === "new-folder") {
-    state.dialog = { kind: "folder-form", mode: "create-child", parentId: folder.id };
+    state.dialog = nestedFolderForm(folder);
     state.dialogFocusSelector = '[data-role="folder-name"]';
     return render();
   }
@@ -3481,7 +3485,10 @@ function bindFolderDialogs() {
       upsertDocumentSummary(movedDocument, form.document.folderId);
     } else {
       const folder = form.mode === "create" || form.mode === "create-child"
-        ? await api.createFolder(name, form.mode === "create-child" ? form.parentId : state.route === "folder" ? state.currentFolder?.id ?? null : null)
+        ? await api.createFolder(name, folderCreationParentId(form, {
+          route: state.route,
+          currentFolderId: state.currentFolder?.id ?? null,
+        }))
         : await api.updateFolder(form.folderId, { name });
       upsertFolderSummary(folder);
     }
