@@ -161,7 +161,7 @@ function appIcon(app, size = "regular") {
 
 function launcherView() {
   if (showOffline()) return offlineView();
-  const apps = launcherApps(allApps()).slice(0, 9);
+  const apps = launcherApps(allApps());
   if (!apps.length && state.registryLoading) return loadingView("Loading Apps…");
   return `<main class="panel-content launcher-view">
     ${apps.length ? `<section class="launcher-grid" aria-label="Apps">${apps.map(launcherItem).join("")}</section>` : emptyView("No Apps available", "Refresh when you are connected to load the catalog.")}

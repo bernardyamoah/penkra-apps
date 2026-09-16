@@ -1,0 +1,120 @@
+{
+  "id": "com.penkra.playbooks",
+  "slug": "playbooks",
+  "name": "Playbooks",
+  "summary": "Discover, write, share, and run Markdown procedures for agents.",
+  "version": "0.0.0-development",
+  "compatibility": { "penkra": ">=0.12.10" },
+  "icons": [{ "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml" }],
+  "entrypoints": { "tab": "app.html", "controller": "operations.js" },
+  "permissions": [
+    { "name": "account-data", "required": true, "reason": "Playbooks stores Account-owned Playbooks, collections, sharing, likes, and runs." },
+    { "name": "thread-compose", "required": true, "reason": "Playbooks stages visible Play, Pause, Resume, and Delete instructions in the relevant Thread." }
+  ],
+  "operations": [
+    {
+      "key": "open", "handler": "open", "instructionsPath": "operations/open.md",
+      "summary": "Open one exact copied Playbook, collection, or Run path in the Playbooks App.",
+      "input": { "type": "object", "properties": { "url": { "type": "string", "minLength": 1 } }, "required": ["url"], "additionalProperties": false },
+      "output": { "type": "object", "properties": { "tabId": { "type": "string" }, "kind": { "enum": ["playbook", "collection", "run"] }, "id": { "type": "string" } }, "required": ["tabId", "kind", "id"], "additionalProperties": false },
+      "examples": [{ "name": "Open a copied Playbook path", "input": { "url": "playbooks://playbook/00000000-0000-4000-8000-000000000001" } }]
+    },
+    {
+      "key": "search", "handler": "search", "instructionsPath": "operations/search.md",
+      "summary": "Search public published Playbooks and collections, or find public author profiles.",
+      "input": { "type": "object", "properties": {
+        "query": { "type": "string", "maxLength": 255 },
+        "kind": { "enum": ["all", "playbook", "collection", "profile"], "default": "all" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
+      }, "additionalProperties": false },
+      "output": { "type": "object", "properties": { "items": { "type": "array", "items": { "type": "object", "additionalProperties": true } } }, "required": ["items"], "additionalProperties": false }
+      ,"examples": [{ "name": "Find sales Playbooks", "input": { "query": "sales", "kind": "all", "limit": 10 } }]
+    },
+    {
+      "key": "get", "handler": "get", "instructionsPath": "operations/get.md",
+      "summary": "Read one complete accessible Playbook, including its Markdown and supporting files.",
+      "input": { "type": "object", "properties": { "playbook": { "type": "string", "minLength": 1 } }, "required": ["playbook"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Read a Playbook by path", "input": { "playbook": "playbooks://playbook/00000000-0000-4000-8000-000000000001" } }]
+    },
+    {
+      "key": "collections.get", "handler": "collections.get", "instructionsPath": "operations/collections.get.md",
+      "summary": "Read one accessible collection and its ordered Playbooks.",
+      "input": { "type": "object", "properties": { "collection": { "type": "string", "minLength": 1 } }, "required": ["collection"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Read a collection by path", "input": { "collection": "playbooks://collection/00000000-0000-4000-8000-000000000002" } }]
+    },
+    {
+      "key": "runs.create", "handler": "runs.create", "instructionsPath": "operations/runs.create.md",
+      "summary": "Register one Playbook run in the invoking Thread and retain its starting snapshot.",
+      "input": { "type": "object", "properties": { "playbook": { "type": "string", "minLength": 1 }, "label": { "type": "string", "minLength": 1, "maxLength": 255 } }, "required": ["playbook"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Register the active Thread's Run", "input": { "playbook": "playbooks://playbook/00000000-0000-4000-8000-000000000001" } }]
+    },
+    {
+      "key": "runs.status", "handler": "runs.status", "instructionsPath": "operations/runs.status.md",
+      "summary": "Read one retained Run and its complete starting Playbook snapshot.",
+      "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 } }, "required": ["id"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Read a retained Run", "input": { "id": "playbooks://run/00000000-0000-4000-8000-000000000003" } }]
+    },
+    {
+      "key": "runs.list", "handler": "runs.list", "instructionsPath": "operations/runs.list.md",
+      "summary": "List the current account's Playbook runs.",
+      "input": { "type": "object", "properties": {
+        "status": { "enum": ["running", "needs_input", "paused", "completed", "deleted"] },
+        "playbook": { "type": "string" }, "includeDeleted": { "type": "boolean", "default": false },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+      }, "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "List active Runs", "input": { "status": "running", "limit": 25 } }]
+    },
+    {
+      "key": "runs.needs-input", "handler": "runs.needs-input", "instructionsPath": "operations/runs.needs-input.md",
+      "summary": "Mark a running Run as needing human input and record the reason.",
+      "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "reason": { "type": "string", "minLength": 1, "maxLength": 2000 } }, "required": ["id", "reason"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Ask for a missing decision", "input": { "id": "playbooks://run/00000000-0000-4000-8000-000000000003", "reason": "Choose the target audience." } }]
+    },
+    {
+      "key": "runs.continue", "handler": "runs.continue", "instructionsPath": "operations/runs.continue.md",
+      "summary": "Mark a Run as running after the required human input is available.",
+      "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "note": { "type": "string", "maxLength": 2000 } }, "required": ["id"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Continue after receiving input", "input": { "id": "playbooks://run/00000000-0000-4000-8000-000000000003", "note": "The user chose founders." } }]
+    },
+    {
+      "key": "runs.complete", "handler": "runs.complete", "instructionsPath": "operations/runs.complete.md",
+      "summary": "Mark a Run completed and record a concise result.",
+      "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "note": { "type": "string", "maxLength": 2000 } }, "required": ["id"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Complete a Run", "input": { "id": "playbooks://run/00000000-0000-4000-8000-000000000003", "note": "All Playbook steps are complete." } }]
+    },
+    {
+      "key": "runs.pause", "handler": "runs.pause", "instructionsPath": "operations/runs.pause.md",
+      "summary": "Report the result after attempting to pause a Run's active schedules, jobs, and continuations.",
+      "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "outcome": { "enum": ["completed", "partial"] }, "summary": { "type": "string", "minLength": 1, "maxLength": 2000 } }, "required": ["id", "outcome", "summary"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Report a successful pause", "input": { "id": "playbooks://run/00000000-0000-4000-8000-000000000003", "outcome": "completed", "summary": "Stopped the continuing schedule." } }]
+    },
+    {
+      "key": "runs.resume", "handler": "runs.resume", "instructionsPath": "operations/runs.resume.md",
+      "summary": "Report the result after attempting to resume the continuing work for a paused Run.",
+      "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "outcome": { "enum": ["completed", "partial"] }, "summary": { "type": "string", "minLength": 1, "maxLength": 2000 } }, "required": ["id", "outcome", "summary"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Report a successful resume", "input": { "id": "playbooks://run/00000000-0000-4000-8000-000000000003", "outcome": "completed", "summary": "Restarted the continuing schedule." } }]
+    },
+    {
+      "key": "runs.delete", "handler": "runs.delete", "instructionsPath": "operations/runs.delete.md",
+      "summary": "Report the result after stopping active Run work; deletion retains files, outputs, and audit data.",
+      "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "outcome": { "enum": ["completed", "partial"] }, "summary": { "type": "string", "minLength": 1, "maxLength": 2000 } }, "required": ["id", "outcome", "summary"], "additionalProperties": false },
+      "output": { "type": "object", "additionalProperties": true },
+      "examples": [{ "name": "Report a successful deletion", "input": { "id": "playbooks://run/00000000-0000-4000-8000-000000000003", "outcome": "completed", "summary": "Stopped active work and retained the Run's data." } }]
+    }
+  ],
+  "contributions": {
+    "handlers": [
+      { "intent": "open-url", "operation": "open", "schemes": ["playbooks"] }
+    ]
+  }
+}

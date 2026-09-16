@@ -103,6 +103,16 @@ test("launcher contains only Apps installed and enabled in the current Space", (
   ]);
 });
 
+test("launcher returns every installed and enabled App without a fixed grid limit", () => {
+  const apps = Array.from({ length: 12 }, (_, index) => ({
+    id: `com.example.app-${index}`,
+    installed: { version: "1.0.0" },
+    enabled: true,
+  }));
+
+  assert.deepEqual(launcherApps(apps), apps);
+});
+
 test("launcher derives sideload status only from the trusted installed package source", () => {
   assert.equal(isSideloadedApp({ installed: { source: "sideload" } }), true);
   assert.equal(isSideloadedApp({ installed: { source: "registry" } }), false);
