@@ -48153,8 +48153,7 @@ class FontManager {
     const inFlight = this.inFlightLocalFaces.get(key);
     if (inFlight)
       return inFlight;
-    let shared;
-    shared = this.loadLocalFontFromSources(family, style).finally(() => {
+    const shared = this.loadLocalFontFromSources(family, style).finally(() => {
       if (this.inFlightLocalFaces.get(key) === shared)
         this.inFlightLocalFaces.delete(key);
     });
@@ -90312,6 +90311,9 @@ function findCloneByComponentPath(graph, instanceId, path) {
   const parts = path.split("/").filter(Boolean);
   if (parts.length === 0)
     return;
+  const addressedClone = graph.getNode(`${instanceId}/${parts.join("/")}`);
+  if (addressedClone)
+    return addressedClone;
   let parentId = instanceId;
   let match;
   for (const componentId of parts) {

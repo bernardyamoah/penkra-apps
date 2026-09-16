@@ -189,6 +189,38 @@ test("Canvas snapshots use one direct Account-data request when the exact body f
   });
 });
 
+test("Canvas uses multipart snapshots when the direct state field exceeds its contract", async () => {
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input);
+        if (input.path.endsWith("/snapshot-uploads")) {
+          return response(201, { uploadId: "upload-id", chunkSize: 32 * 1024 * 1024 });
+        }
+        if (input.path.endsWith("/parts")) return response(201, { receivedBytes: 1 });
+        if (input.path.endsWith("/complete")) return response(201, { throughSequence: 9 });
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  await api.createSnapshot("document-id", {
+    throughSequence: 9,
+    state: "A".repeat(11_200_004),
+    source: { version: "2.15", children: [] },
+  });
+
+  assert.equal(calls[0].path, "/projects/document-id/snapshot-uploads");
+  assert.deepEqual(
+    calls.filter((call) => call.path.endsWith("/parts"))
+      .map((call) => JSON.parse(new TextDecoder().decode(call.body)).kind),
+    ["projection", "state"],
+  );
+  assert.equal(calls.at(-1).path, "/projects/snapshot-uploads/upload-id/complete");
+});
+
 test("Canvas requests global image generation inside its document namespace", async () => {
   const calls = [];
   const api = createCanvasApi({
@@ -362,6 +394,31 @@ test("Canvas accepts an automatically inlined snapshot without range requests", 
   ]);
 });
 
+test("Canvas requests only project updates after its catch-up watermark", async () => {
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input);
+        return response(200, {
+          requiresSnapshot: false,
+          snapshotThroughSequence: 7,
+          latestSequence: 11,
+          hasMore: false,
+          updates: [{ sequence: 11, update: "AQ==" }],
+        });
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const result = await api.listUpdates("project/id", 9);
+
+  assert.equal(calls[0].path, "/projects/project%2Fid/updates?afterSequence=9");
+  assert.equal(calls[0].method, "GET");
+  assert.equal(result.latestSequence, 11);
+});
+
 test("Canvas starts the document and asset-manifest reads together", async () => {
   const started = [];
   const metadata = [];
@@ -451,6 +508,98 @@ test("Canvas reads large projections in bounded parallel server-sized ranges", a
   assert.ok(peak > 1 && peak <= 4);
   assert.ok(calls.every((call) => call.length <= 16));
   assert.equal(new Set(calls.map((call) => call.offset)).size, calls.length);
+});
+
+test("execution reads a settled document projection with one metadata request and no state or assets", async () => {
+  const source = { version: "2.17", children: [{ id: "frame", type: "frame", children: [] }] };
+  const projectionBytes = new TextEncoder().encode(JSON.stringify(source));
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input.path);
+        if (input.path === "/projects/document?chunked=auto") {
+          return response(200, {
+            id: "document",
+            snapshot: { throughSequence: 7, chunked: true, projectionBytes: projectionBytes.byteLength, stateBytes: 3 },
+            updates: [],
+          });
+        }
+        if (input.path === "/projects/document/snapshots/7/content?kind=projection&offset=0") {
+          return response(200, {
+            bytes: Buffer.from(projectionBytes).toString("base64"),
+            totalBytes: projectionBytes.byteLength,
+            complete: true,
+          });
+        }
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const loaded = await api.getDocumentForExecution("document");
+
+  assert.equal(loaded.projectionOnly, true);
+  assert.deepEqual(loaded.payload.snapshot.source, source);
+  assert.deepEqual(calls, [
+    "/projects/document?chunked=auto",
+    "/projects/document/snapshots/7/content?kind=projection&offset=0",
+  ]);
+});
+
+test("execution hydrates a document with pending updates from one metadata request", async () => {
+  const source = { version: "2.17", children: [] };
+  const projectionBytes = new TextEncoder().encode(JSON.stringify(source));
+  const stateBytes = Uint8Array.from([1, 2, 3]);
+  const calls = [];
+  const api = createCanvasApi({
+    account: {
+      request: async (input) => {
+        calls.push(input.path);
+        if (input.path === "/projects/document?chunked=auto") {
+          return response(200, {
+            id: "document",
+            snapshot: {
+              throughSequence: 7,
+              chunked: true,
+              projectionBytes: projectionBytes.byteLength,
+              stateBytes: stateBytes.byteLength,
+            },
+            updates: [{ sequence: 8, update: "AQ==" }],
+          });
+        }
+        if (input.path === "/projects/document/snapshots/7/content?kind=projection&offset=0") {
+          return response(200, {
+            bytes: Buffer.from(projectionBytes).toString("base64"),
+            totalBytes: projectionBytes.byteLength,
+            complete: true,
+          });
+        }
+        if (input.path === "/projects/document/snapshots/7/content?kind=state&offset=0") {
+          return response(200, {
+            bytes: Buffer.from(stateBytes).toString("base64"),
+            totalBytes: stateBytes.byteLength,
+            complete: true,
+          });
+        }
+        throw new Error(`Unexpected request ${input.path}`);
+      },
+      subscribe: async () => () => undefined,
+    },
+  });
+
+  const loaded = await api.getDocumentForExecution("document");
+
+  assert.equal(loaded.projectionOnly, false);
+  assert.deepEqual(loaded.payload.snapshot.source, source);
+  assert.equal(loaded.payload.snapshot.state, Buffer.from(stateBytes).toString("base64"));
+  assert.equal(calls.filter((path) => path === "/projects/document?chunked=auto").length, 1);
+  assert.deepEqual(new Set(calls.slice(1)), new Set([
+    "/projects/document/snapshots/7/content?kind=projection&offset=0",
+    "/projects/document/snapshots/7/content?kind=state&offset=0",
+  ]));
+  assert.equal(calls.some((path) => path.endsWith("/blobs")), false);
 });
 
 test("opening an unmigrated document returns its projection without side effects", async () => {

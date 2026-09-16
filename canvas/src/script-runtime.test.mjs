@@ -69,6 +69,31 @@ test("Get exposes host-computed source bounds and problems without allowing muta
   assert.deepEqual(result.touchedNodeIds, []);
 });
 
+test("Get reuses one immutable parent clone across a large sibling traversal", async () => {
+  const children = Array.from({ length: 2_500 }, (_, index) => ({
+    id: `item-${index}`,
+    type: "rectangle",
+    width: 10,
+    height: 10,
+  }));
+  const result = await executeCanvasScript(
+    { version: "2.17", children: [{ id: "collection", type: "frame", children }] },
+    `let parent;
+     let shared = true;
+     const count = Get("type:rectangle", (context) => {
+       parent ||= context.parent;
+       shared &&= context.parent === parent;
+     });
+     return { count, shared, parentChildren: parent.children.length };`,
+  );
+
+  assert.deepEqual(result.result, {
+    count: 2_500,
+    shared: true,
+    parentChildren: 2_500,
+  });
+});
+
 test("execute scripts cannot reach host services", async () => {
   const result = await executeCanvasScript(
     { version: "2.15", children: [] },

@@ -560,6 +560,15 @@ function findCloneByComponentPath(
 ): SceneNode | undefined {
   const parts = path.split('/').filter(Boolean)
   if (parts.length === 0) return undefined
+
+  // Instance clones use their authored component path as their graph ID. Most
+  // overrides can therefore resolve in one lookup instead of recursively
+  // rescanning the cloned instance subtree for every path segment. Keep the
+  // component-chain search below for older/imported graphs that do not carry
+  // deterministic Pencil addresses.
+  const addressedClone = graph.getNode(`${instanceId}/${parts.join('/')}`)
+  if (addressedClone) return addressedClone
+
   let parentId = instanceId
   let match: SceneNode | undefined
   for (const componentId of parts) {

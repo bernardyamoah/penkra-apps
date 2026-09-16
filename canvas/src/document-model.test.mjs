@@ -15,6 +15,7 @@ import {
   materialize,
   mutate,
   reconcileDocumentPayload,
+  applyIncrementalDocumentPayload,
   restoreDocumentModel,
 } from "./document-model.mjs";
 
@@ -102,6 +103,42 @@ test("Canvas applies missed lower-sequence updates after its offline update adva
   initial.doc.destroy();
   remote.doc.destroy();
   local.doc.destroy();
+});
+
+test("Canvas catch-up advances its fetched watermark without replacing the snapshot", () => {
+  const model = createDocumentModel({ children: [] });
+  const remote = createDocumentModel({ children: [] });
+  mutate(remote, { kind: "insert-node", parentId: null, position: 0, node: { id: "remote", type: "frame", children: [] } });
+  const result = applyIncrementalDocumentPayload(model, {
+    requiresSnapshot: false,
+    latestSequence: 14,
+    updates: [{ sequence: 14, update: encodeState(remote) }],
+  }, { lastSequence: 12, lastCatchUpSequence: 9 });
+
+  assert.deepEqual(result, {
+    requiresSnapshot: false,
+    changed: true,
+    lastSequence: 14,
+    lastCatchUpSequence: 14,
+  });
+  assert.equal(materialize(model).children[0].id, "remote");
+});
+
+test("Canvas catch-up leaves the model untouched when the server requires a newer snapshot", () => {
+  const model = createDocumentModel({ children: [] });
+  const result = applyIncrementalDocumentPayload(model, {
+    requiresSnapshot: true,
+    latestSequence: 20,
+    updates: [],
+  }, { lastSequence: 12, lastCatchUpSequence: 9 });
+
+  assert.deepEqual(result, {
+    requiresSnapshot: true,
+    changed: false,
+    lastSequence: 12,
+    lastCatchUpSequence: 9,
+  });
+  assert.deepEqual(materialize(model).children, []);
 });
 
 test("remote update application reports whether Yjs state actually changed", () => {

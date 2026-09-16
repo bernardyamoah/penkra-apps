@@ -103,6 +103,46 @@ test("component conditions compile to compact instance overrides before renderin
   assert.deepEqual(source.children[0].padding, conditionalPadding());
 });
 
+test("instances sharing one component state receive independent compiled overrides", () => {
+  const source = {
+    axes: {}, variables: {}, children: [{
+      id: "status",
+      type: "frame",
+      properties: {
+        state: { type: "enum", values: ["idle", "active"], default: "idle" },
+      },
+      children: [{
+        id: "indicator",
+        type: "rectangle",
+        fill: [
+          { value: "#888888", when: { props: { state: "idle" } } },
+          { value: "#3366ff", when: { props: { state: "active" } } },
+        ],
+      }],
+    }, {
+      id: "status-a",
+      type: "ref",
+      ref: "status",
+      props: { state: "active" },
+    }, {
+      id: "status-b",
+      type: "ref",
+      ref: "status",
+      props: { state: "active" },
+    }],
+  };
+
+  const lowered = lowerCanvasModelForOpenPencil(source);
+  const first = lowered.children[1].descendants;
+  const second = lowered.children[2].descendants;
+
+  assert.deepEqual(first, { indicator: { fill: "#3366ff" } });
+  assert.deepEqual(second, first);
+  assert.notEqual(first, second);
+  first.indicator.fill = "#ff0000";
+  assert.equal(second.indicator.fill, "#3366ff");
+});
+
 test("nested component bindings and authored overrides stay compact and win predictably", () => {
   const source = {
     axes: { appearance: { modes: [{ name: "light" }, { name: "dark" }] } },

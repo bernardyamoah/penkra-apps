@@ -62,6 +62,23 @@ test("keeps SVG source bytes and prepares a separate renderer cache", async () =
   assert.equal(asset.mimeType, "image/svg+xml");
 });
 
+test("keeps successfully loaded assets when another asset fails", async () => {
+  const result = await hydrateDocumentAssets({
+    readAsset: async (_documentId, descriptor) => {
+      if (descriptor.path === "images/missing.png") throw new Error("unavailable");
+      return new Uint8Array([1, 2, 3]);
+    },
+  }, "document-id", [
+    { path: "images/available.png", sha256: "a".repeat(64), size: 3 },
+    { path: "images/missing.png", sha256: "b".repeat(64), size: 3 },
+  ]);
+
+  assert.equal(result.assets.has("images/available.png"), true);
+  assert.equal(result.assets.has("images/missing.png"), false);
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.failures[0].descriptor.path, "images/missing.png");
+});
+
 test("detects image fills whose document assets have not loaded", () => {
   const document = {
     children: [{

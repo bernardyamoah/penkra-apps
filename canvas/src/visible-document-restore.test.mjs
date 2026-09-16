@@ -51,6 +51,28 @@ test("only the latest hidden document request is restored", async () => {
   assert.deepEqual(calls, ["document-2"]);
 });
 
+test("duplicate host restoration does not reopen the same in-flight document", async () => {
+  const calls = [];
+  const first = deferred();
+  const restore = createVisibleDocumentRestore({
+    openDocument: async (documentId) => {
+      calls.push(documentId);
+      await first.promise;
+    },
+    onQueued: () => undefined,
+    onError: (error) => assert.fail(error),
+  });
+
+  restore.setActive(true);
+  restore.restore("document-1");
+  restore.restore("document-1");
+  first.resolve();
+  await first.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(calls, ["document-1"]);
+});
+
 test("visible restores stay serialized", async () => {
   const calls = [];
   const first = deferred();
