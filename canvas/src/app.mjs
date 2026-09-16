@@ -1,8 +1,10 @@
 import { createCanvasApi } from "./canvas-api.mjs";
+import { documentCardPeople, folderCardPeople } from "./card-people.mjs";
 import { COLLECTION_SORT_OPTIONS, sortCollection } from "./collection-toolbar.mjs";
 import { actionButtonState } from "./interaction-state.mjs";
 import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
 import { createFolderForDocument } from "./folder-actions.mjs";
+import { initials, naviiAvatarUrl, profileLabel } from "./profile-avatar.mjs";
 import { createBlankDocumentSource } from "./blank-document.mjs";
 import { createDocumentCollectionLifecycle } from "./document-collection-lifecycle.mjs";
 import { createDocumentAssetCache } from "./document-asset-cache.mjs";
@@ -1579,8 +1581,8 @@ function segment(key, label) {
 
 function documentCard(document) {
   const preview = state.thumbnails.get(document.id);
-  const editor = document.lastEditor && !document.lastEditor.isCurrentUser ? avatar(document.lastEditor) : "";
-  return `<button class="document-card" data-document-id="${document.id}"><span class="document-preview">${preview ? `<img src="${preview}" alt="" />` : `<span class="preview-placeholder">${icon("frame")}</span>`}</span><span class="document-meta"><strong>${escapeHtml(document.title)}</strong><span class="document-submeta"><span>${escapeHtml(moduleLabel(document.module))}</span><span>Edited ${escapeHtml(relativeTime(document.updatedAt))}</span>${editor}</span></span></button>`;
+  const people = cardPeople(documentCardPeople(document, state.currentProfile));
+  return `<button class="document-card" data-document-id="${document.id}"><span class="document-preview">${preview ? `<img src="${preview}" alt="" />` : `<span class="preview-placeholder">${icon("frame")}</span>`}</span><span class="document-meta"><strong>${escapeHtml(document.title)}</strong><span class="document-submeta"><span>${escapeHtml(moduleLabel(document.module))}</span><span>Edited ${escapeHtml(relativeTime(document.updatedAt))}</span>${people}</span></span></button>`;
 }
 
 function folderCard(folder, nested = false) {
@@ -1596,13 +1598,14 @@ function folderCard(folder, nested = false) {
 
 function folderPeopleProfiles(folder, { inheritCurrentFolder = false } = {}) {
   const direct = state.folderGrants.get(folder.id) ?? [];
-  if (direct.length || !inheritCurrentFolder || !state.currentFolder) return direct;
-  return state.folderGrants.get(state.currentFolder.id) ?? [];
+  const grants = direct.length || !inheritCurrentFolder || !state.currentFolder
+    ? direct
+    : state.folderGrants.get(state.currentFolder.id) ?? [];
+  return folderCardPeople(folder, grants, state.currentProfile);
 }
 
 function folderPeople(folder, options) {
-  const profiles = folderPeopleProfiles(folder, options).slice(0, 4);
-  return profiles.length ? `<span class="folder-people">${profiles.map(avatar).join("")}</span>` : "";
+  return cardPeople(folderPeopleProfiles(folder, options), "folder-people");
 }
 
 function folderPeopleSummary(folder) {
@@ -1621,14 +1624,21 @@ function moduleLabel(value) {
 }
 
 function avatar(profile) {
-  const label = profile.name?.trim() || "Collaborator";
-  return profile.avatarUrl
-    ? `<img class="avatar" src="${escapeHtml(profile.avatarUrl)}" alt="${escapeHtml(label)}" />`
-    : `<span class="avatar avatar-fallback" aria-label="${escapeHtml(label)}">${escapeHtml(initials(label))}</span>`;
+  const label = profileLabel(profile);
+  const source = profile.avatarUrl || naviiAvatarUrl(profile);
+  return source
+    ? `<img class="avatar" src="${escapeHtml(source)}" alt="${escapeHtml(label)}" data-avatar-fallback-label="${escapeHtml(label)}" data-avatar-fallback-initials="${escapeHtml(initials(label))}" referrerpolicy="no-referrer" />`
+    : avatarFallback(label);
 }
 
-function initials(value) {
-  return value.split(/\s+/u).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
+function avatarFallback(label) {
+  return `<span class="avatar avatar-fallback" aria-label="${escapeHtml(label)}">${escapeHtml(initials(label))}</span>`;
+}
+
+function cardPeople(profiles, className = "card-people") {
+  if (!profiles.length) return "";
+  const label = profiles.map(profileLabel).join(", ");
+  return `<span class="${className}" aria-label="${escapeHtml(label)}">${profiles.map(avatar).join("")}</span>`;
 }
 
 function renderContextMenu() {
@@ -2158,6 +2168,7 @@ function field(property, value, type = "text", full = false, nodeId = "", option
 }
 
 function bindCommon() {
+  bindAvatarFallbacks();
   root.querySelector('[data-action="retry"]')?.addEventListener("click", () => void bootstrap());
   if (state.route === "document-unavailable") {
     root.querySelector('[data-action="back"]')?.addEventListener("click", () => void navigateToLibrary());
@@ -2165,6 +2176,21 @@ function bindCommon() {
   root.querySelectorAll("[data-action=close-dialog]").forEach((button) =>
     button.addEventListener("click", closeDialog),
   );
+}
+
+function bindAvatarFallbacks() {
+  root.querySelectorAll("img[data-avatar-fallback-label]").forEach((image) => {
+    const replace = () => {
+      if (!image.isConnected) return;
+      const fallback = document.createElement("span");
+      fallback.className = "avatar avatar-fallback";
+      fallback.setAttribute("aria-label", image.dataset.avatarFallbackLabel || "Collaborator");
+      fallback.textContent = image.dataset.avatarFallbackInitials || "?";
+      image.replaceWith(fallback);
+    };
+    image.addEventListener("error", replace, { once: true });
+    if (image.complete && image.naturalWidth === 0) replace();
+  });
 }
 
 function bindLibrary() {
