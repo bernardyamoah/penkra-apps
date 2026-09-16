@@ -137,8 +137,9 @@ h1, h2, h3, p { margin: 0; }
 .folder-header-actions { display: flex; align-items: center; gap: 8px; }
 .folder-header-actions .button { display: flex; align-items: center; gap: 7px; }
 .folder-detail-line { display: flex; align-items: center; gap: 10px; }
-.folder-people, .card-people { display: flex; align-items: center; padding-left: 5px; }
-.folder-people .avatar, .card-people .avatar { margin-left: -5px; }
+.folder-people, .card-people { display: flex; align-items: center; padding-left: 6px; }
+.folder-people .avatar, .card-people .avatar { width: 18px; height: 18px; margin-left: -6px; border: 2px solid #141414; background: #2a303b; box-shadow: 0 0 0 1px #ffffff24, 0 1px 3px #0000008c; }
+.folder-people .avatar-fallback, .card-people .avatar-fallback { background: #34466f; color: #e3ebff; }
 .folder-name-line { display: flex; align-items: center; gap: 4px; }
 .folder-name-line .icon-button { width: 25px; min-height: 25px; }
 .folder-name-line .icon { width: 13px; height: 13px; }
