@@ -1,7 +1,5 @@
 import { createCanvasApi } from "./canvas-api.mjs";
 import {
-  LOCAL_ORIGIN,
-  Y,
   applyRemoteUpdate,
   createDocumentOperationUpdates,
   createDocumentModel,
@@ -17,10 +15,12 @@ import { loadCanvasImports } from "./canvas-imports.mjs";
 import { searchCanvasIcons } from "./pencil-icon-provider.mjs";
 import { isSvgAsset, prepareAssetForRendering } from "./document-assets.mjs";
 import { applySvgConversionRequests } from "./svg-vectors.mjs";
+import { createOperationDocumentStore } from "./operation-document-store.mjs";
 
 const runtime = globalThis.penkra;
 if (!runtime?.operations) throw new Error("Canvas operations require the Penkra App runtime.");
 const api = createCanvasApi(runtime);
+const operationDocuments = createOperationDocumentStore(api);
 
 runtime.operations.handle("icons.search", async ({ query, library, limit }) =>
   searchCanvasIcons(query, { library, limit }));
@@ -164,16 +164,12 @@ runtime.operations.handle("documents.open", async ({ documentId }, context) => {
   return { documentId, tabId: tab.id };
 });
 
-runtime.operations.handle("documents.execute", async ({ documentId, code }, context) => {
-  const signal = context?.signal ?? new AbortController().signal;
-  const { executeCanvasScript, scriptNeedsInspection } = await import("./script-runtime.mjs");
-  let { payload, projectionOnly } = await api.getDocumentForExecution(documentId);
-  let model = projectionOnly ? null : restoreDocumentModel(payload);
-  try {
-    // A projection is parsed JSON and executeCanvasScript serializes it directly
-    // into an isolated VM. It cannot mutate the Account response object, so a
-    // second host-side deep clone would only duplicate the complete document.
-    const before = model ? materialize(model) : payload.snapshot.source;
+runtime.operations.handle("documents.execute", async ({ documentId, code }, context) =>
+  operationDocuments.run(documentId, async (documentState) => {
+    const signal = context?.signal ?? new AbortController().signal;
+    const { executeCanvasScript, scriptNeedsInspection } = await import("./script-runtime.mjs");
+    let model = documentState.model;
+    const before = operationDocuments.source(documentState);
     const needsInitialInspection = scriptNeedsInspection(code);
     const inspectDocument = needsInitialInspection
       ? (await import("./document-inspection.mjs")).inspectDocument
@@ -194,7 +190,7 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
         ]),
       ),
     );
-    let assetDescriptors = payload.assets;
+    let assetDescriptors;
     let svgConversions = [];
     if (execution.svgConversions?.length) {
       assetDescriptors ??= await api.listAssets(documentId);
@@ -276,7 +272,7 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
         documentId,
         changed: false,
         operationId: null,
-        sequence: authoritativeSequence(payload),
+        sequence: documentState.sequence,
         prints: execution.prints,
         result: execution.result,
         touchedNodeIds,
@@ -288,26 +284,26 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
     signal.throwIfAborted();
     if (!model) {
       const hydrated = await api.getDocument(documentId);
-      if (authoritativeSequence(hydrated) !== authoritativeSequence(payload)) {
+      if (authoritativeSequence(hydrated) !== documentState.sequence) {
         const error = new Error("Canvas document changed while the operation was executing. Read the current document and retry the edit.");
         error.code = "CANVAS_DOCUMENT_CONFLICT";
         throw error;
       }
-      payload = hydrated;
-      model = restoreDocumentModel(payload);
+      operationDocuments.replaceWithPayload(documentState, hydrated);
+      model = documentState.model;
     }
     const operationId = crypto.randomUUID();
     const operationUpdates = createDocumentOperationUpdates(model, execution.document);
-    Y.applyUpdate(model.doc, operationUpdates.forward, LOCAL_ORIGIN);
     const appended = await api.appendUpdate(documentId, {
       clientUpdateId: crypto.randomUUID(),
       update: encodeUpdate(operationUpdates.forward),
-      expectedSequence: authoritativeSequence(payload),
+      expectedSequence: documentState.sequence,
       operation: {
         id: operationId,
         inverseUpdate: encodeUpdate(operationUpdates.inverse),
       },
     });
+    operationDocuments.recordCommittedUpdate(documentState, operationUpdates.forward, appended.sequence);
     await api.createSnapshot(documentId, {
       throughSequence: appended.sequence,
       state: encodeState(model),
@@ -331,10 +327,8 @@ runtime.operations.handle("documents.execute", async ({ documentId, code }, cont
       inspection,
       issues,
     }, screenshots);
-  } finally {
-    model?.doc.destroy();
-  }
-});
+  }),
+);
 
 runtime.operations.handle("documents.undo", async ({ documentId, operationId }) => {
   const payload = await api.getDocument(documentId);
