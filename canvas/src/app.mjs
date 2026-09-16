@@ -1408,6 +1408,14 @@ function currentCanvasSelection() {
 
 function render() {
   const renderStartedAt = performance.now();
+  const activeSearch = document.activeElement?.matches?.('[data-role="search"]')
+    ? {
+        start: document.activeElement.selectionStart,
+        end: document.activeElement.selectionEnd,
+        direction: document.activeElement.selectionDirection,
+      }
+    : null;
+  const hasRequestedFocus = Boolean(state.dialogFocusSelector);
   const retainedHost = state.route === "editor" && state.document && state.engineSurface
     ? root.querySelector('[data-role="openpencil-surface"]')
     : null;
@@ -1458,6 +1466,18 @@ function render() {
   }
   else bindLibrary();
   focusRequestedControl();
+  if (activeSearch && !hasRequestedFocus) {
+    const search = root.querySelector('[data-role="search"]');
+    if (search) {
+      search.focus({ preventScroll: true });
+      const valueLength = search.value.length;
+      search.setSelectionRange(
+        Math.min(activeSearch.start ?? valueLength, valueLength),
+        Math.min(activeSearch.end ?? valueLength, valueLength),
+        activeSearch.direction ?? "none",
+      );
+    }
+  }
   performanceMonitor.record("ui.render", performance.now() - renderStartedAt, {
     route: state.route,
     nodes: state.documentNodes?.length ?? 0,
