@@ -3,7 +3,7 @@
   "slug": "canvas",
   "name": "Canvas",
   "summary": "Create, edit, review, and share Account-owned collaborative design documents.",
-  "version": "0.2.97",
+  "version": "0.2.99",
   "compatibility": {
     "penkra": ">=0.12.6"
   },
@@ -32,7 +32,7 @@
     {
       "name": "network-fetch",
       "required": true,
-      "reason": "Canvas loads the exact font faces used by a design through host-validated online font providers."
+      "reason": "Canvas loads design font faces and deterministic fallback profile avatars from Navii using non-PII Account IDs."
     }
   ],
   "operations": [

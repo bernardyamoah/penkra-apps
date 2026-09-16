@@ -1,4 +1,5 @@
 import { createCanvasApi } from "./canvas-api.mjs";
+import { initials, naviiAvatarUrl, profileLabel, shareAccessPeople } from "./share-people.mjs";
 import { readCollectionCache, writeCollectionCache } from "./collection-cache.mjs";
 import { createFolderForDocument } from "./folder-actions.mjs";
 import { createBlankDocumentSource } from "./blank-document.mjs";
@@ -1588,14 +1589,15 @@ function moduleLabel(value) {
 }
 
 function avatar(profile) {
-  const label = profile.name?.trim() || "Collaborator";
-  return profile.avatarUrl
-    ? `<img class="avatar" src="${escapeHtml(profile.avatarUrl)}" alt="${escapeHtml(label)}" />`
-    : `<span class="avatar avatar-fallback" aria-label="${escapeHtml(label)}">${escapeHtml(initials(label))}</span>`;
+  const label = profileLabel(profile);
+  const source = profile.avatarUrl || naviiAvatarUrl(profile);
+  return source
+    ? `<img class="avatar" src="${escapeHtml(source)}" alt="${escapeHtml(label)}" data-avatar-fallback-label="${escapeHtml(label)}" data-avatar-fallback-initials="${escapeHtml(initials(label))}" referrerpolicy="no-referrer" />`
+    : avatarFallback(label);
 }
 
-function initials(value) {
-  return value.split(/\s+/u).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
+function avatarFallback(label) {
+  return `<span class="avatar avatar-fallback" aria-label="${escapeHtml(label)}">${escapeHtml(initials(label))}</span>`;
 }
 
 function renderContextMenu() {
@@ -2125,6 +2127,7 @@ function field(property, value, type = "text", full = false, nodeId = "", option
 }
 
 function bindCommon() {
+  bindAvatarFallbacks();
   root.querySelector('[data-action="retry"]')?.addEventListener("click", () => void bootstrap());
   if (state.route === "document-unavailable") {
     root.querySelector('[data-action="back"]')?.addEventListener("click", () => void navigateToLibrary());
@@ -2132,6 +2135,21 @@ function bindCommon() {
   root.querySelectorAll("[data-action=close-dialog]").forEach((button) =>
     button.addEventListener("click", closeDialog),
   );
+}
+
+function bindAvatarFallbacks() {
+  root.querySelectorAll('img[data-avatar-fallback-label]').forEach((image) => {
+    const replace = () => {
+      if (!image.isConnected) return;
+      const fallback = document.createElement('span');
+      fallback.className = 'avatar avatar-fallback';
+      fallback.setAttribute('aria-label', image.dataset.avatarFallbackLabel || 'Collaborator');
+      fallback.textContent = image.dataset.avatarFallbackInitials || '?';
+      image.replaceWith(fallback);
+    };
+    image.addEventListener('error', replace, { once: true });
+    if (image.complete && image.naturalWidth === 0) replace();
+  });
 }
 
 function bindLibrary() {
@@ -3012,13 +3030,12 @@ function renderDialog() {
 }
 
 function renderShareInvite() {
-  const owner = state.currentProfile ? { ...state.currentProfile, isOwner: true, isCurrentUser: true } : null;
-  const people = [owner, ...state.grants].filter(Boolean);
-  return `<div class="share-dialog-body"><div class="share-form"><div class="share-email-control">${icon("mail")}<input data-role="share-email" type="email" placeholder="Email address" aria-label="Collaborator email" /></div><button class="button primary" data-action="grant">Invite</button></div><div class="share-people"><div class="share-people-heading"><strong>People with access</strong><span>${people.length + 1}</span></div>${people.map(sharePersonRow).join("")}<div class="share-person-row"><span class="avatar avatar-fallback share-agent-avatar">A</span><div class="share-person-copy"><strong>Agent</strong><span>Penkra Agent · works in this Thread</span></div></div></div></div>`;
+  const people = shareAccessPeople(state.currentProfile, state.grants);
+  return `<div class="share-dialog-body"><div class="share-form"><div class="share-email-control">${icon("mail")}<input data-role="share-email" type="email" placeholder="Email address" aria-label="Collaborator email" /></div><button class="button primary" data-action="grant">Invite</button></div><div class="share-people"><div class="share-people-heading"><strong>People with access</strong><span>${people.length}</span></div>${people.map(sharePersonRow).join("")}</div></div>`;
 }
 
 function sharePersonRow(person) {
-  const name = person.isCurrentUser ? "You" : person.name?.trim() || person.email;
+  const name = profileLabel(person);
   const detail = person.email ?? (person.isOwner ? "Owner" : person.status === "pending" ? "Pending invitation" : "Editor");
   const inherited = person.inheritedFrom ? `<span class="share-inherited">via ${escapeHtml(person.inheritedFrom)}</span>` : "";
   return `<div class="share-person-row">${avatar(person)}<div class="share-person-copy"><div class="share-person-name"><strong>${escapeHtml(name)}</strong>${inherited}</div><span>${escapeHtml(detail)}</span></div>${person.isOwner ? `<span class="share-access-label">Owner</span>` : person.inheritedFrom ? "" : `<button class="share-remove" data-revoke-grant="${escapeHtml(person.id)}">Remove</button>`}</div>`;
