@@ -1578,7 +1578,10 @@ function folderTopbar(folder) {
 }
 
 function searchControl(placeholder, label = placeholder) {
-  return `<label class="search-wrap">${icon("search")}<input class="search" data-role="search" name="canvas-search" autocomplete="off" type="search" value="${escapeHtml(state.search)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(label)}" /><kbd>⌘&nbsp;K</kbd></label>`;
+  const trailingControl = state.search.trim()
+    ? `<button type="button" class="search-clear" data-action="clear-search" aria-label="Clear search">${icon("close")}</button>`
+    : `<kbd>⌘&nbsp;K</kbd>`;
+  return `<div class="search-wrap">${icon("search")}<input class="search" data-role="search" name="canvas-search" autocomplete="off" type="search" value="${escapeHtml(state.search)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(label)}" />${trailingControl}</div>`;
 }
 
 function libraryTabs(active) {
@@ -1616,7 +1619,7 @@ function renderSearchResults(query) {
   const scopeControls = scopes.map(([value, label]) => `<button type="button" data-search-scope="${escapeHtml(value)}" aria-pressed="${state.searchScope === value}" class="${state.searchScope === value ? "active" : ""}">${escapeHtml(label)}</button>`).join("");
   const results = count
     ? `${folders.length ? folderSection(folders, "Folders") : ""}<section class="library-section"><div class="section-heading"><h2>Designs <span>${documents.length}</span></h2>${state.searchLoading ? `<span class="search-indexing" role="status">Searching document text…</span>` : ""}</div>${documents.length ? documentCollection(documents) : ""}</section>`
-    : `<section class="empty search-empty"><div><span class="search-empty-art">${icon("search-off")}</span><h2>No designs match “${escapeHtml(state.search.trim())}”</h2><p>${searchEmptyDescription()}</p><div class="empty-actions"><button class="button" data-action="clear-search">${icon("close")}Clear search</button><button class="button primary" data-action="create-from-search">${icon("plus")}Create “${escapeHtml(state.search.trim())}”</button></div></div></section>`;
+    : `<section class="empty search-empty"><div><span class="search-empty-art">${icon("search-off")}</span><div class="search-empty-copy"><h2>No designs match “${escapeHtml(state.search.trim())}”</h2><p>${searchEmptyDescription()}</p></div><div class="empty-actions"><button class="button" data-action="clear-search">${icon("close")}Clear search</button><button class="button primary" data-action="create-from-search">${icon("plus")}Create “${escapeHtml(state.search.trim())}”</button></div></div></section>`;
   return `<section class="search-results"><header class="search-results-head"><h1>Results for “${escapeHtml(state.search.trim())}” <span>${count}</span></h1><div class="search-scopes" aria-label="Search location">${scopeControls}</div></header>${results}</section>`;
 }
 
@@ -2428,11 +2431,11 @@ function bindLibrary() {
     state.searchScope = button.dataset.searchScope;
     render();
   }));
-  root.querySelector('[data-action="clear-search"]')?.addEventListener("click", () => {
+  root.querySelectorAll('[data-action="clear-search"]').forEach((button) => button.addEventListener("click", () => {
     clearLibrarySearch();
     render();
     root.querySelector('[data-role="search"]')?.focus();
-  });
+  }));
   root.querySelector('[data-action="create-from-search"]')?.addEventListener("click", () => {
     state.dialog = { kind: "new-design", name: state.search.trim() };
     state.dialogFocusSelector = '[data-role="design-name"]';
