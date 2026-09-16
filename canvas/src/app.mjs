@@ -1504,7 +1504,7 @@ function folderSection(folders, title, rail = false, includeNew = false, nested 
 
 function collectionControls() {
   const sort = COLLECTION_SORT_OPTIONS.find((option) => option.id === state.collectionSort) ?? COLLECTION_SORT_OPTIONS[0];
-  return `<div class="collection-controls"><div class="view-toggle" role="group" aria-label="Choose view"><button class="view-option ${state.collectionView === "grid" ? "active" : ""}" data-action="set-collection-view" data-view="grid" type="button" aria-label="Grid view" aria-pressed="${state.collectionView === "grid"}">${icon("grid")}</button><button class="view-option ${state.collectionView === "list" ? "active" : ""}" data-action="set-collection-view" data-view="list" type="button" aria-label="List view" aria-pressed="${state.collectionView === "list"}">${icon("list")}</button></div><button class="sort-control" data-action="choose-collection-sort" type="button" aria-haspopup="menu">${escapeHtml(sort.label)} ${icon("chevron-down")}</button></div>`;
+  return `<div class="collection-controls"><div class="view-toggle" role="group" aria-label="Choose view"><button class="view-option ${state.collectionView === "grid" ? "active" : ""}" data-action="set-collection-view" data-view="grid" type="button" aria-label="Grid view" aria-pressed="${state.collectionView === "grid"}">${icon("grid")}</button><button class="view-option ${state.collectionView === "list" ? "active" : ""}" data-action="set-collection-view" data-view="list" type="button" aria-label="List view" aria-pressed="${state.collectionView === "list"}">${icon("list")}</button></div><button class="sort-control" data-action="choose-collection-sort" type="button" aria-haspopup="menu">${icon("arrow-up-down")}<span>${escapeHtml(sort.label)}</span></button></div>`;
 }
 
 function documentCollection(documents) {
@@ -3423,6 +3423,7 @@ function icon(name) {
     search: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
     chevron: '<path d="m9 6 6 6-6 6"/>',
     "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+    "arrow-up-down": '<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
     pencil: '<path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"/><path d="m14 7 3 3"/>',
     grid: '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>',
     list: '<path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r=".7"/><circle cx="4" cy="12" r=".7"/><circle cx="4" cy="18" r=".7"/>',

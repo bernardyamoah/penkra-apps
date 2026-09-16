@@ -90,10 +90,12 @@ h1, h2, h3, p { margin: 0; }
 .collection-controls { display: flex; align-items: center; gap: 6px; padding-bottom: 6px; color: #ffffff5c; font-size: 13px; }
 .view-toggle { height: 36px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 8px; background: #ffffff0a; }
 .view-option { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #ffffff99; cursor: pointer; }
+.library-tabs .view-option { height: 30px; }
 .view-option:hover { background: #ffffff0d; color: #fff; }
 .view-option.active { background: #ffffff14; color: #fff; }
-.view-option .icon { width: 15px; height: 15px; }
+.view-option .icon { width: 16px; height: 16px; }
 .sort-control { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border: 0; border-radius: 8px; background: #ffffff0f; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.library-tabs .sort-control { height: 34px; }
 .sort-control:hover { background: #ffffff16; }
 .sort-control .icon { width: 15px; height: 15px; }
 .folder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(252px, 100%), 252px)); gap: 20px; }
